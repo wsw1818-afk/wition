@@ -8,17 +8,16 @@ import { useDayStore } from '../../stores/dayStore'
 import { useCalendarStore } from '../../stores/calendarStore'
 import { InputBar } from './InputBar'
 import { EmptyState } from '../common/EmptyState'
-import { MoodPicker } from '../common/MoodPicker'
+import { ConfirmDialog } from '../common/ConfirmDialog'
 import { SortableBlock } from './SortableBlock'
 
 dayjs.locale('ko')
 
 export function DayDetailView() {
-  const { selectedDate, dayMap, clearSelection, patchDay } = useCalendarStore()
+  const { selectedDate, clearSelection, patchDay } = useCalendarStore()
   const { items, loading, load, addText, addChecklist, update, remove, togglePin, reset, reorder } = useDayStore()
   const inputRef = useRef<InputBarHandle>(null)
-  const [currentMood, setCurrentMood] = useState<string | null>(null)
-
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -30,26 +29,18 @@ export function DayDetailView() {
 
   useEffect(() => {
     if (selectedDate) {
-      load(selectedDate)
-      const dayData = dayMap[selectedDate]
-      setCurrentMood(dayData?.mood ?? null)
+      load(selectedDate).then(() => {
+        // 빈 날짜 → 바로 입력 포커스 (#12)
+        setTimeout(() => inputRef.current?.focus(), 100)
+      })
     } else {
       reset()
-      setCurrentMood(null)
     }
   }, [selectedDate])
 
   if (!selectedDate) return null
 
   const dateLabel = dayjs(selectedDate).format('YYYY년 M월 D일 (ddd)')
-
-  async function handleMoodChange(mood: string | null) {
-    if (!selectedDate) return
-    setCurrentMood(mood)
-    await window.api.updateMood(selectedDate, mood)
-    const updatedDay = await window.api.getNoteDay(selectedDate)
-    if (updatedDay) patchDay(updatedDay)
-  }
 
   async function handleAddText(text: string) {
     const day = await addText(text)
@@ -66,9 +57,15 @@ export function DayDetailView() {
     if (day) patchDay(day)
   }
 
-  async function handleDelete(id: string) {
-    const day = await remove(id)
+  function handleDeleteRequest(id: string) {
+    setDeleteTarget(id)
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) return
+    const day = await remove(deleteTarget)
     if (day) patchDay(day)
+    setDeleteTarget(null)
   }
 
   async function handleTogglePin(id: string) {
@@ -79,6 +76,19 @@ export function DayDetailView() {
   async function handleTagsChange(id: string, tags: string[]) {
     const day = await update(id, { tags: JSON.stringify(tags) })
     if (day) patchDay(day)
+  }
+
+  async function handleAttachFile() {
+    const files = await window.api.attachFile()
+    if (!files || files.length === 0) return
+    // 첨부 파일 정보를 텍스트 블록으로 추가
+    for (const f of files) {
+      const sizeStr = f.size < 1024 ? `${f.size}B`
+        : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB`
+        : `${(f.size / (1024 * 1024)).toFixed(1)}MB`
+      const day = await addText(`📎 ${f.name} (${sizeStr})\n[file:${f.path}]`)
+      if (day) patchDay(day)
+    }
   }
 
   async function handleDragEnd(event: DragEndEvent) {
@@ -109,7 +119,6 @@ export function DayDetailView() {
           </button>
           <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100">{dateLabel}</h2>
         </div>
-        <MoodPicker selected={currentMood} onChange={handleMoodChange} />
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 py-2">
@@ -127,7 +136,7 @@ export function DayDetailView() {
                     item={item}
                     onUpdate={(c: string) => handleUpdate(item.id, c)}
                     onTagsChange={(tags: string[]) => handleTagsChange(item.id, tags)}
-                    onDelete={() => handleDelete(item.id)}
+                    onDelete={() => handleDeleteRequest(item.id)}
                     onTogglePin={() => handleTogglePin(item.id)}
                   />
                 ))}
@@ -137,7 +146,15 @@ export function DayDetailView() {
         )}
       </div>
 
-      <InputBar ref={inputRef} onAddText={handleAddText} onAddChecklist={handleAddChecklist} />
+      <InputBar ref={inputRef} onAddText={handleAddText} onAddChecklist={handleAddChecklist} onAttachFile={handleAttachFile} />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="메모 삭제"
+        message="이 메모를 삭제하시겠습니까? 삭제된 메모는 복구할 수 없습니다."
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

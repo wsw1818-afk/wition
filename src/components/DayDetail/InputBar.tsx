@@ -4,13 +4,14 @@ import type { BlockType } from '../../types'
 interface Props {
   onAddText: (text: string) => void
   onAddChecklist: (text?: string) => void
+  onAttachFile?: () => void
 }
 
 export interface InputBarHandle {
   focus: () => void
 }
 
-export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ onAddText, onAddChecklist }, ref) {
+export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ onAddText, onAddChecklist, onAttachFile }, ref) {
   const [text, setText] = useState('')
   const [mode, setMode] = useState<BlockType>('text')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -56,6 +57,21 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ on
         className="flex-1 text-sm bg-transparent outline-none text-gray-800 dark:text-gray-200
                    placeholder-gray-400"
       />
+
+      {/* 파일 첨부 버튼 */}
+      {onAttachFile && (
+        <button
+          onClick={onAttachFile}
+          className="flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center
+                     bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400
+                     hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          title="파일 첨부"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+          </svg>
+        </button>
+      )}
 
       {/* 전송 버튼 */}
       <button

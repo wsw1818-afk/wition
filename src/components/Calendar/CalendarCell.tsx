@@ -17,10 +17,17 @@ export const CalendarCell = memo(function CalendarCell({
   const count = noteDay?.note_count ?? 0
   const mood = noteDay?.mood
   const dots = Math.min(count, 3)
+  const summary = noteDay?.summary
+
+  // 호버 툴팁 (#8)
+  const tooltip = count > 0
+    ? `${count}개 메모${summary ? `\n${summary}` : ''}`
+    : undefined
 
   return (
     <button
       onClick={onClick}
+      title={tooltip}
       className={`
         relative flex flex-col items-center justify-start gap-0.5
         pt-1.5 pb-1 rounded-xl transition-all duration-100 text-sm select-none

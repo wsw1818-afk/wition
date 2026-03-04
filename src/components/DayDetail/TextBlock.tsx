@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import type { NoteItem } from '../../types'
 import { parseTags } from '../../types'
 import { TagInput } from './TagInput'
@@ -15,6 +15,7 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(item.content)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => { setText(item.content) }, [item.content])
 
@@ -26,11 +27,26 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
     }
   }, [editing])
 
+  // 자동 저장: 1초 디바운스
+  const autoSave = useCallback((value: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      const trimmed = value.trim()
+      if (trimmed && trimmed !== item.content) onUpdate(trimmed)
+    }, 1000)
+  }, [item.content, onUpdate])
+
+  // 컴포넌트 언마운트 시 타이머 정리
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [])
+
   function save() {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
     setEditing(false)
     const trimmed = text.trim()
     if (trimmed && trimmed !== item.content) onUpdate(trimmed)
-    else setText(item.content) // 변경 없으면 복원
+    else setText(item.content)
   }
 
   function autoResize(el: HTMLTextAreaElement) {
@@ -49,7 +65,7 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
         <textarea
           ref={ref}
           value={text}
-          onChange={(e) => { setText(e.target.value); autoResize(e.target) }}
+          onChange={(e) => { setText(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
           onBlur={save}
           onKeyDown={(e) => { if (e.key === 'Escape') save() }}
           className="w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 resize-none
@@ -57,13 +73,13 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
           rows={1}
         />
       ) : (
-        <p
+        <div
           onClick={() => setEditing(true)}
           className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
                      cursor-text min-h-[20px]"
         >
-          {item.content}
-        </p>
+          <RenderContent content={item.content} />
+        </div>
       )}
 
       {/* 태그 */}
@@ -79,6 +95,42 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
         <ActionBtn onClick={onDelete} title="삭제" icon="trash" />
       </div>
     </div>
+  )
+}
+
+/** 텍스트 내 [file:xxx] 패턴을 클릭 가능한 첨부 링크로 렌더링 */
+function RenderContent({ content }: { content: string }) {
+  const filePattern = /\[file:(.+?)\]/g
+  const parts: (string | { fileName: string })[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = filePattern.exec(content)) !== null) {
+    if (match.index > lastIndex) parts.push(content.slice(lastIndex, match.index))
+    parts.push({ fileName: match[1] })
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < content.length) parts.push(content.slice(lastIndex))
+
+  if (parts.length <= 1 && typeof parts[0] === 'string') return <>{content}</>
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        typeof part === 'string' ? (
+          <span key={i}>{part}</span>
+        ) : (
+          <button
+            key={i}
+            onClick={(e) => { e.stopPropagation(); window.api.openAttachment(part.fileName) }}
+            className="text-accent-500 hover:underline cursor-pointer"
+            title="파일 열기"
+          >
+            열기
+          </button>
+        )
+      )}
+    </>
   )
 }
 
