@@ -1,0 +1,17 @@
+node_modules/
+dist-electron/
+out/
+release/
+*.db
+*.db-wal
+*.db-shm
+.commit_message.txt
+screenshots/
+*.tsbuildinfo
+AI_HYBRID_GUIDE.md
+ARCHIVE_*.md
+CLAUDE.md
+MEMORY.md
+PROGRESS.md
+start.bat
+vite.browser.config.ts
