@@ -3,7 +3,7 @@ import dayjs from 'dayjs'
 import 'dayjs/locale/ko'
 import { useSearchStore } from '../../stores/searchStore'
 import { useCalendarStore } from '../../stores/calendarStore'
-import { parseChecklist, parseTags } from '../../types'
+import { parseChecklist, parseTags, parseCallout, parseCodeBlock, parseToggle } from '../../types'
 
 dayjs.locale('ko')
 
@@ -40,11 +40,28 @@ export function SearchPanel() {
 
   // 내용 미리보기 생성
   function getPreview(item: { type: string; content: string }): string {
-    if (item.type === 'checklist') {
-      const items = parseChecklist(item.content)
-      return items.map(i => i.text).join(', ').slice(0, 60) || '(빈 체크리스트)'
+    switch (item.type) {
+      case 'checklist': {
+        const items = parseChecklist(item.content)
+        return items.map(i => i.text).join(', ').slice(0, 60) || '(빈 체크리스트)'
+      }
+      case 'callout':
+        return parseCallout(item.content).text.slice(0, 60) || '(빈 콜아웃)'
+      case 'code':
+        return parseCodeBlock(item.content).code.slice(0, 60) || '(빈 코드)'
+      case 'toggle':
+        return parseToggle(item.content).title.slice(0, 60) || '(빈 토글)'
+      case 'divider':
+        return '───────'
+      default:
+        return item.content.slice(0, 60)
     }
-    return item.content.slice(0, 60)
+  }
+
+  const BLOCK_LABELS: Record<string, string> = {
+    checklist: '체크리스트', heading1: 'H1', heading2: 'H2', heading3: 'H3',
+    bulleted_list: '목록', numbered_list: '번호목록', quote: '인용',
+    divider: '구분선', callout: '콜아웃', code: '코드', toggle: '토글'
   }
 
   return (
@@ -98,9 +115,9 @@ export function SearchPanel() {
                   <span className="text-xs text-gray-400">
                     {dayjs(item.day_id).format('YYYY년 M월 D일')}
                   </span>
-                  {item.type === 'checklist' && (
+                  {item.type !== 'text' && BLOCK_LABELS[item.type] && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-100 dark:bg-accent-500/20 text-accent-600 dark:text-accent-400">
-                      체크리스트
+                      {BLOCK_LABELS[item.type]}
                     </span>
                   )}
                   {item.pinned === 1 && (

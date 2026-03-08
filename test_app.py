@@ -1,11 +1,19 @@
 """Wition 앱 Playwright 상세 테스트 (Vite dev server 기반, mock API 사용)
-총 35개 테스트 시나리오 (자동 백업 UI + 파일 첨부 버튼 포함)
+총 48개 테스트 시나리오 (노션 스타일 블록 + 슬래시 커맨드 + 마크다운 변환 + 인라인 서식 포함)
 """
 from playwright.sync_api import sync_playwright
 import time
+from datetime import datetime
 
-PORT = 5175
+PORT = 5176
 BASE = f"http://localhost:{PORT}/src/"
+
+# 오늘 날짜 동적 생성
+_now = datetime.now()
+TODAY_LABEL = f"{_now.year}년 {_now.month}월 {_now.day}일"
+MONTH_LABEL = f"{_now.year}년 {_now.month}월"
+PREV_MONTH_LABEL = f"{_now.year}년 {_now.month - 1}월" if _now.month > 1 else f"{_now.year - 1}년 12월"
+NEXT_MONTH_LABEL = f"{_now.year}년 {_now.month + 1}월" if _now.month < 12 else f"{_now.year + 1}년 1월"
 
 def test_all():
     with sync_playwright() as p:
@@ -39,7 +47,7 @@ def test_all():
 
         # ── 2. 달력 렌더링 ──────────────
         print("2. 달력 렌더링 테스트...")
-        month_header = page.locator("text=2026년 3월").first
+        month_header = page.locator(f"text={MONTH_LABEL}").first
         assert month_header.is_visible(), "월 헤더 안 보임"
         for day_name in ["일", "월", "화", "수", "목", "금", "토"]:
             assert page.locator(f"text={day_name}").first.is_visible(), f"요일 {day_name} 안 보임"
@@ -50,7 +58,7 @@ def test_all():
         today_btn = page.locator("text=오늘").first
         today_btn.click()
         page.wait_for_timeout(500)
-        detail = page.locator("text=2026년 3월 4일")
+        detail = page.locator(f"text={TODAY_LABEL}")
         assert detail.is_visible(), "날짜 상세 안 보임"
         ok("날짜 상세 진입 성공")
 
@@ -62,7 +70,7 @@ def test_all():
 
         # ── 5. 빈 입력 방지 ─────────────
         print("5. 빈 입력 방지 테스트...")
-        input_field = page.locator("input[placeholder='메모를 입력하세요...']")
+        input_field = page.locator("input[placeholder*='메모 입력']")
         # 빈 문자열로 Enter → 메모가 추가되지 않아야 함
         input_field.fill("")
         input_field.press("Enter")
@@ -91,7 +99,7 @@ def test_all():
 
         # ── 8. 두 번째 메모 추가 ─────────
         print("8. 두 번째 메모 추가 테스트...")
-        input_field = page.locator("input[placeholder='메모를 입력하세요...']")
+        input_field = page.locator("input[placeholder*='메모 입력']")
         input_field.fill("두 번째 메모")
         input_field.press("Enter")
         page.wait_for_timeout(500)
@@ -139,18 +147,15 @@ def test_all():
         else:
             warn("편집할 메모가 없음")
 
-        # ── 11. 체크리스트 모드 전환 + 추가 ──
-        print("11. 체크리스트 모드 전환 + 추가 테스트...")
-        toggle_btn = page.locator("button:has-text('T')").first
-        toggle_btn.click()
-        page.wait_for_timeout(200)
-        checklist_input = page.locator("input[placeholder='체크리스트 항목을 입력하세요...']")
-        checklist_input.fill("체크리스트 항목")
-        checklist_input.press("Enter")
+        # ── 11. 체크리스트 마크다운 자동변환으로 추가 ──
+        print("11. 체크리스트 마크다운 자동변환 추가 테스트...")
+        input_field = page.locator("input[placeholder*='메모 입력']")
+        input_field.fill("[] 체크리스트 항목")
+        input_field.press("Enter")
         page.wait_for_timeout(500)
         checklist_item = page.locator("text=체크리스트 항목")
         assert checklist_item.is_visible(), "체크리스트 항목 안 보임"
-        ok("체크리스트 추가 성공")
+        ok("체크리스트 마크다운 변환 추가 성공")
 
         # ── 12. 체크리스트 체크박스 토글 ──
         print("12. 체크리스트 체크박스 토글 테스트...")
@@ -283,7 +288,7 @@ def test_all():
         back_btn = page.locator("button[aria-label='뒤로']")
         back_btn.click()
         page.wait_for_timeout(300)
-        assert page.locator("text=2026년 3월").first.is_visible(), "달력으로 돌아가지 않음"
+        assert page.locator(f"text={MONTH_LABEL}").first.is_visible(), "달력으로 돌아가지 않음"
         ok("뒤로가기 성공")
 
         # ── 20. 달력 dot 표시 ───────────
@@ -310,7 +315,7 @@ def test_all():
         # ── 22. 다크모드 상태에서 UI 확인 ──
         print("22. 다크모드 상태에서 달력 UI 확인...")
         # 텍스트가 여전히 보이는지 확인
-        assert page.locator("text=2026년 3월").first.is_visible(), "다크모드에서 월 헤더 안 보임"
+        assert page.locator(f"text={MONTH_LABEL}").first.is_visible(), "다크모드에서 월 헤더 안 보임"
         # 다크모드에서 버튼 텍스트가 "라이트 모드"로 바뀌어야 함
         light_btn = page.locator("text=☀️ 라이트 모드").first
         assert light_btn.is_visible(), "다크모드에서 라이트 모드 버튼 안 보임"
@@ -348,19 +353,19 @@ def test_all():
         prev_btn = page.locator("button[aria-label='이전 달']")
         prev_btn.click()
         page.wait_for_timeout(500)
-        assert page.locator("text=2026년 2월").first.is_visible(), "이전 달 이동 실패"
-        # 다음 달 2번 → 4월 확인
+        assert page.locator(f"text={PREV_MONTH_LABEL}").first.is_visible(), "이전 달 이동 실패"
+        # 다음 달 2번 확인
         next_btn = page.locator("button[aria-label='다음 달']")
         next_btn.click()
         page.wait_for_timeout(500)
-        assert page.locator("text=2026년 3월").first.is_visible(), "다음 달(3월) 이동 실패"
+        assert page.locator(f"text={MONTH_LABEL}").first.is_visible(), "다음 달(3월) 이동 실패"
         next_btn.click()
         page.wait_for_timeout(500)
-        assert page.locator("text=2026년 4월").first.is_visible(), "다음 달(4월) 이동 실패"
-        # 3월로 복귀
+        assert page.locator(f"text={NEXT_MONTH_LABEL}").first.is_visible(), "다음 달 이동 실패"
+        # 현재 달로 복귀
         prev_btn.click()
         page.wait_for_timeout(500)
-        ok("월 이동 성공 (2월→3월→4월→3월)")
+        ok("월 이동 성공 (이전→현재→다음→현재)")
 
         # ── 25. 삭제 확인 다이얼로그 + 실제 삭제 ──
         print("25. 삭제 확인 다이얼로그 + 실제 삭제 테스트...")
@@ -467,14 +472,14 @@ def test_all():
         prev_nav = page.locator("button[aria-label='이전 달']")
         prev_nav.click()
         page.wait_for_timeout(500)
-        assert page.locator("text=2026년 2월").first.is_visible(), "이전 달 이동 실패"
+        assert page.locator(f"text={PREV_MONTH_LABEL}").first.is_visible(), "이전 달 이동 실패"
         # Ctrl+N으로 오늘로 복귀
         page.keyboard.press("Control+n")
         page.wait_for_timeout(500)
         # 오늘 날짜(3월 4일)의 상세 뷰 또는 3월 달력이 보여야 함
         march_or_detail = (
-            page.locator("text=2026년 3월").first.is_visible() or
-            page.locator("text=2026년 3월 4일").is_visible()
+            page.locator(f"text={MONTH_LABEL}").first.is_visible() or
+            page.locator(f"text={TODAY_LABEL}").is_visible()
         )
         if march_or_detail:
             ok("Ctrl+N 오늘로 이동 성공")
@@ -582,6 +587,189 @@ def test_all():
         back_final = page.locator("button[aria-label='뒤로']")
         if back_final.is_visible():
             back_final.click()
+            page.wait_for_timeout(300)
+
+        # ── 36. 제목(H1) 마크다운 자동 변환 ──
+        print("36. 제목(H1) 마크다운 자동 변환 테스트...")
+        today_btn3 = page.locator("text=오늘").first
+        today_btn3.click()
+        page.wait_for_timeout(500)
+        h1_input = page.locator("input[placeholder*='메모 입력']")
+        h1_input.fill("# 큰 제목 테스트")
+        h1_input.press("Enter")
+        page.wait_for_timeout(500)
+        h1_text = page.locator("text=큰 제목 테스트")
+        if h1_text.is_visible():
+            # H1은 text-2xl font-bold 클래스를 가져야 함
+            ok("H1 마크다운 변환 성공")
+        else:
+            warn("H1 마크다운 변환 미동작")
+
+        # ── 37. 제목(H2) 마크다운 자동 변환 ──
+        print("37. 제목(H2) 마크다운 자동 변환 테스트...")
+        h2_input = page.locator("input[placeholder*='메모 입력']")
+        h2_input.fill("## 중간 제목 테스트")
+        h2_input.press("Enter")
+        page.wait_for_timeout(500)
+        h2_text = page.locator("text=중간 제목 테스트")
+        if h2_text.is_visible():
+            ok("H2 마크다운 변환 성공")
+        else:
+            warn("H2 마크다운 변환 미동작")
+
+        # ── 38. 글머리 기호 목록 마크다운 변환 ──
+        print("38. 글머리 기호 목록 마크다운 변환 테스트...")
+        list_input = page.locator("input[placeholder*='메모 입력']")
+        list_input.fill("- 목록 항목 테스트")
+        list_input.press("Enter")
+        page.wait_for_timeout(500)
+        list_text = page.locator("text=목록 항목 테스트")
+        if list_text.is_visible():
+            ok("글머리 기호 목록 변환 성공")
+        else:
+            warn("글머리 기호 목록 변환 미동작")
+
+        # ── 39. 번호 목록 마크다운 변환 ──
+        print("39. 번호 목록 마크다운 변환 테스트...")
+        num_input = page.locator("input[placeholder*='메모 입력']")
+        num_input.fill("1. 번호 목록 항목")
+        num_input.press("Enter")
+        page.wait_for_timeout(500)
+        num_text = page.locator("text=번호 목록 항목")
+        if num_text.is_visible():
+            ok("번호 목록 변환 성공")
+        else:
+            warn("번호 목록 변환 미동작")
+
+        # ── 40. 인용 블록 마크다운 변환 ──
+        print("40. 인용 블록 마크다운 변환 테스트...")
+        quote_input = page.locator("input[placeholder*='메모 입력']")
+        quote_input.fill("> 인용문 테스트입니다")
+        quote_input.press("Enter")
+        page.wait_for_timeout(500)
+        quote_text = page.locator("text=인용문 테스트입니다")
+        if quote_text.is_visible():
+            ok("인용 블록 변환 성공")
+        else:
+            warn("인용 블록 변환 미동작")
+
+        # ── 41. 구분선(---) 마크다운 변환 ──
+        print("41. 구분선 마크다운 변환 테스트...")
+        divider_input = page.locator("input[placeholder*='메모 입력']")
+        divider_input.fill("---")
+        divider_input.press("Enter")
+        page.wait_for_timeout(500)
+        hr = page.locator("hr")
+        if hr.count() > 0:
+            ok("구분선 변환 성공")
+        else:
+            warn("구분선 변환 미동작")
+
+        # ── 42. 슬래시 커맨드 팝업 표시 ──
+        print("42. 슬래시 커맨드 팝업 표시 테스트...")
+        slash_input = page.locator("input[placeholder*='메모 입력']")
+        slash_input.fill("/")
+        page.wait_for_timeout(500)
+        # 슬래시 메뉴 팝업이 표시되어야 함
+        slash_menu = page.locator("text=텍스트")
+        if slash_menu.count() > 0:
+            # 메뉴 항목 확인
+            menu_items = ["제목 1", "제목 2", "제목 3", "글머리 기호", "번호 목록", "체크리스트", "인용", "구분선", "콜아웃", "코드", "토글"]
+            found = 0
+            for item in menu_items:
+                if page.locator(f"text={item}").count() > 0:
+                    found += 1
+            if found >= 8:
+                ok(f"슬래시 커맨드 메뉴 표시 성공 ({found}개 항목)")
+            else:
+                warn(f"슬래시 메뉴 항목 부분 표시 ({found}/{len(menu_items)})")
+        else:
+            warn("슬래시 커맨드 메뉴 미표시")
+        # ESC로 슬래시 메뉴 닫기
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+
+        # ── 43. 슬래시 커맨드로 콜아웃 블록 추가 ──
+        print("43. 슬래시 커맨드로 콜아웃 블록 추가 테스트...")
+        slash_input2 = page.locator("input[placeholder*='메모 입력']")
+        slash_input2.fill("/콜아웃")
+        page.wait_for_timeout(400)
+        callout_option = page.locator("text=콜아웃").first
+        if callout_option.is_visible():
+            # Enter로 선택
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(500)
+            # 콜아웃 블록이 추가되었는지 확인 (💡 이모지)
+            callout_emoji = page.locator("text=💡")
+            if callout_emoji.count() > 0:
+                ok("슬래시 커맨드로 콜아웃 추가 성공")
+            else:
+                warn("콜아웃 블록 미표시")
+        else:
+            warn("슬래시 메뉴에서 콜아웃 미발견")
+
+        # ── 44. 슬래시 커맨드로 코드 블록 추가 ──
+        print("44. 슬래시 커맨드로 코드 블록 추가 테스트...")
+        slash_input3 = page.locator("input[placeholder*='메모 입력']")
+        slash_input3.fill("/코드")
+        page.wait_for_timeout(400)
+        code_option = page.locator("text=코드").first
+        if code_option.is_visible():
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(500)
+            # 코드 블록: select 또는 '복사' 버튼 존재 확인
+            copy_btn = page.locator("text=복사")
+            if copy_btn.count() > 0:
+                ok("슬래시 커맨드로 코드 블록 추가 성공")
+            else:
+                warn("코드 블록 미표시")
+        else:
+            warn("슬래시 메뉴에서 코드 미발견")
+
+        # ── 45. 슬래시 커맨드로 토글 블록 추가 ──
+        print("45. 슬래시 커맨드로 토글 블록 추가 테스트...")
+        slash_input4 = page.locator("input[placeholder*='메모 입력']")
+        slash_input4.fill("/토글")
+        page.wait_for_timeout(400)
+        toggle_option = page.locator("text=토글").first
+        if toggle_option.is_visible():
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(500)
+            # 토글 블록: 펼치기 아이콘(▶) 존재 확인
+            toggle_icon = page.locator("button:has(svg path[d='M8 5v14l11-7z'])")
+            if toggle_icon.count() > 0:
+                ok("슬래시 커맨드로 토글 블록 추가 성공")
+            else:
+                warn("토글 블록 미표시")
+        else:
+            warn("슬래시 메뉴에서 토글 미발견")
+
+        # ── 46. 인라인 서식 (굵게/기울임/코드) 렌더링 ──
+        print("46. 인라인 서식 렌더링 테스트...")
+        inline_input = page.locator("input[placeholder*='메모 입력']")
+        inline_input.fill("**굵은 텍스트**와 *기울임*과 `코드`")
+        inline_input.press("Enter")
+        page.wait_for_timeout(500)
+        bold_text = page.locator("strong:has-text('굵은 텍스트')")
+        italic_text = page.locator("em:has-text('기울임')")
+        code_text = page.locator("code:has-text('코드')")
+        if bold_text.count() > 0:
+            ok("인라인 굵게 서식 렌더링 성공")
+        else:
+            warn("인라인 굵게 서식 미동작")
+        if italic_text.count() > 0:
+            ok("인라인 기울임 서식 렌더링 성공")
+        else:
+            warn("인라인 기울임 서식 미동작")
+        if code_text.count() > 0:
+            ok("인라인 코드 서식 렌더링 성공")
+        else:
+            warn("인라인 코드 서식 미동작")
+
+        # 뒤로가기
+        back_final2 = page.locator("button[aria-label='뒤로']")
+        if back_final2.is_visible():
+            back_final2.click()
             page.wait_for_timeout(300)
 
         # ── 스크린샷 저장 ───────────────

@@ -1,10 +1,12 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import type { NoteItem, BlockType, ChecklistEntry, NoteDay } from '../types'
+import type { NoteItem, BlockType, ChecklistEntry, NoteDay, Alarm } from '../types'
+import { getDefaultContent } from '../types'
 
 interface DayState {
   dayId: string | null
   items: NoteItem[]
+  alarms: Alarm[]
   loading: boolean
 }
 
@@ -15,6 +17,8 @@ interface DayActions {
   addText: (text: string) => Promise<NoteDay | null>
   /** 체크리스트 블록 추가 (첫 항목 텍스트 선택적) */
   addChecklist: (firstText?: string) => Promise<NoteDay | null>
+  /** 범용 블록 추가 (노션 스타일) */
+  addBlock: (type: BlockType, content?: string) => Promise<NoteDay | null>
   /** 블록 수정 (content, pinned, tags 등) */
   update: (id: string, patch: Partial<Pick<NoteItem, 'content' | 'pinned' | 'tags'>>) => Promise<NoteDay | null>
   /** 블록 삭제 */
@@ -25,6 +29,12 @@ interface DayActions {
   reorder: (orderedIds: string[]) => Promise<void>
   /** 스토어 초기화 (날짜 해제 시) */
   reset: () => void
+  /** 알람 로드 */
+  loadAlarms: (dayId: string) => Promise<void>
+  /** 알람 추가/수정 */
+  upsertAlarm: (alarm: Alarm) => Promise<boolean>
+  /** 알람 삭제 */
+  removeAlarm: (id: string) => Promise<boolean>
 }
 
 export type DayStore = DayState & DayActions
@@ -32,16 +42,20 @@ export type DayStore = DayState & DayActions
 export const useDayStore = create<DayStore>((set, get) => ({
   dayId: null,
   items: [],
+  alarms: [],
   loading: false,
 
   load: async (dayId) => {
     set({ loading: true, dayId })
     try {
-      const items = await window.api.getNoteItems(dayId)
-      set({ items })
+      const [items, alarms] = await Promise.all([
+        window.api.getNoteItems(dayId),
+        window.api.getAlarms(dayId),
+      ])
+      set({ items, alarms })
     } catch (err) {
       console.error('dayStore.load:', err)
-      set({ items: [] })
+      set({ items: [], alarms: [] })
     } finally {
       set({ loading: false })
     }
@@ -89,6 +103,29 @@ export const useDayStore = create<DayStore>((set, get) => ({
       return updatedDay
     } catch (err) {
       console.error('addChecklist:', err)
+      return null
+    }
+  },
+
+  addBlock: async (type, content) => {
+    const { dayId, items } = get()
+    if (!dayId) return null
+
+    const now = Date.now()
+    const newItem: NoteItem = {
+      id: uuid(), day_id: dayId, type,
+      content: content ?? getDefaultContent(type),
+      tags: '[]', pinned: 0,
+      order_index: items.length,
+      created_at: now, updated_at: now
+    }
+
+    try {
+      const updatedDay = await window.api.upsertNoteItem(newItem)
+      if (updatedDay) set((s) => ({ items: [...s.items, newItem] }))
+      return updatedDay
+    } catch (err) {
+      console.error('addBlock:', err)
       return null
     }
   },
@@ -161,5 +198,59 @@ export const useDayStore = create<DayStore>((set, get) => ({
     }
   },
 
-  reset: () => set({ dayId: null, items: [], loading: false })
+  reset: () => set({ dayId: null, items: [], alarms: [], loading: false }),
+
+  loadAlarms: async (dayId) => {
+    try {
+      const alarms = await window.api.getAlarms(dayId)
+      set({ alarms })
+    } catch (err) {
+      console.error('loadAlarms:', err)
+    }
+  },
+
+  upsertAlarm: async (alarm) => {
+    try {
+      const ok = await window.api.upsertAlarm(alarm)
+      if (ok) {
+        const currentDayId = get().dayId
+        set((s) => {
+          const existing = s.alarms.find(a => a.id === alarm.id)
+          // 날짜가 변경된 경우: 현재 날짜 목록에서 제거
+          if (existing && existing.day_id !== alarm.day_id) {
+            // 다른 날짜로 이동됨 → 현재 목록에서 삭제
+            if (alarm.day_id !== currentDayId) {
+              return { alarms: s.alarms.filter(a => a.id !== alarm.id) }
+            }
+          }
+          // 새 알람이 현재 날짜가 아닌 경우: 목록에 추가하지 않음
+          if (!existing && alarm.day_id !== currentDayId) {
+            return {}
+          }
+          // 일반 업데이트 또는 같은 날짜 내 수정
+          const exists = s.alarms.some(a => a.id === alarm.id)
+          return {
+            alarms: exists
+              ? s.alarms.map(a => a.id === alarm.id ? alarm : a)
+              : [...s.alarms, alarm].sort((a, b) => a.time.localeCompare(b.time))
+          }
+        })
+      }
+      return ok
+    } catch (err) {
+      console.error('upsertAlarm:', err)
+      return false
+    }
+  },
+
+  removeAlarm: async (id) => {
+    try {
+      const ok = await window.api.deleteAlarm(id)
+      if (ok) set((s) => ({ alarms: s.alarms.filter(a => a.id !== id) }))
+      return ok
+    } catch (err) {
+      console.error('removeAlarm:', err)
+      return false
+    }
+  },
 }))

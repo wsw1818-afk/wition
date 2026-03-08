@@ -1,10 +1,20 @@
-import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu } from 'electron'
-import { join, basename, extname } from 'path'
-import { hostname } from 'os'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, copyFileSync, statSync } from 'fs'
+import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, Notification, net, safeStorage } from 'electron'
+import { join, basename, extname, resolve } from 'path'
+import { pathToFileURL } from 'url'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, copyFileSync, statSync, appendFileSync } from 'fs'
 import Database from 'better-sqlite3'
 import { initializeSchema } from './db/schema'
 import * as Q from './db/queries'
+import * as Sync from './sync'
+
+// 글로벌 에러 핸들러 — 크래시 원인 파악용
+const crashLogPath = join(process.env.APPDATA || process.env.HOME || '.', 'Wition', 'crash.log')
+const logCrash = (label: string, err: unknown) => {
+  const msg = `[${new Date().toISOString()}] ${label}: ${err instanceof Error ? err.stack : String(err)}\n`
+  try { appendFileSync(crashLogPath, msg) } catch {}
+}
+process.on('uncaughtException', (err) => { logCrash('uncaughtException', err); })
+process.on('unhandledRejection', (err) => { logCrash('unhandledRejection', err); })
 
 /* ─────────────────────────── 설정 관리 ──────────────────────────── */
 
@@ -17,12 +27,19 @@ interface AppConfig {
   backupPath?: string            // 백업 저장 경로 (미지정 시 dataPath/backups/)
   backupIntervalMin?: number     // 백업 주기 (분, 기본 30)
   backupKeepCount?: number       // 보관 개수 (기본 10)
+  calendarWidth?: number         // 달력 패널 너비 (px, 기본 420)
+  lastSyncAt?: number            // 마지막 동기화 시각 (epoch ms, 증분 동기화용)
+  authToken?: string             // GoTrue 액세스 토큰
+  authRefreshToken?: string      // GoTrue 리프레시 토큰
+  authUser?: { id: string; email: string }  // 로그인된 사용자 정보
+  savedEmail?: string                       // 기억된 이메일
+  savedPasswordEnc?: string                 // 기억된 비밀번호 (safeStorage 암호화, base64)
 }
 
 const CONFIG_FILE = join(app.getPath('userData'), 'config.json')
 
 function getDefaultDataPath(): string {
-  return join(app.getPath('documents'), 'Wition')
+  return join(app.getPath('userData'), 'data')
 }
 
 function loadConfig(): AppConfig {
@@ -39,6 +56,72 @@ function saveConfig(cfg: AppConfig): void {
 }
 
 let config = loadConfig()
+
+/* ───────────── DB 경로 마이그레이션 (OneDrive → AppData) ──────────── */
+
+function migrateDataPath(): void {
+  const newDefault = getDefaultDataPath()
+  const oldPath = config.dataPath
+
+  // 이미 새 기본 경로를 사용 중이면 스킵
+  if (oldPath === newDefault) return
+
+  const oldDb = join(oldPath, 'wition.db')
+  const newDb = join(newDefault, 'wition.db')
+
+  // 새 경로에 이미 DB가 있으면 마이그레이션 불필요 (경로만 갱신)
+  if (existsSync(newDb)) {
+    config.dataPath = newDefault
+    saveConfig(config)
+    console.log(`[migrate] 새 경로에 DB 존재 — dataPath 업데이트: ${newDefault}`)
+    return
+  }
+
+  // 이전 경로에 DB가 없으면 새 경로 사용
+  if (!existsSync(oldDb)) {
+    config.dataPath = newDefault
+    saveConfig(config)
+    console.log(`[migrate] 이전 DB 없음 — 새 경로 사용: ${newDefault}`)
+    return
+  }
+
+  // 이전 DB를 새 경로로 복사 (WAL checkpoint 후)
+  try {
+    if (!existsSync(newDefault)) mkdirSync(newDefault, { recursive: true })
+
+    // WAL checkpoint: .db-wal 내용을 .db에 반영
+    const tempDb = new Database(oldDb)
+    tempDb.pragma('wal_checkpoint(TRUNCATE)')
+    tempDb.close()
+
+    // DB 파일 복사
+    copyFileSync(oldDb, newDb)
+    console.log(`[migrate] DB 복사 완료: ${oldDb} → ${newDb}`)
+
+    // 첨부파일 폴더도 복사
+    const oldAttach = join(oldPath, 'attachments')
+    const newAttach = join(newDefault, 'attachments')
+    if (existsSync(oldAttach)) {
+      if (!existsSync(newAttach)) mkdirSync(newAttach, { recursive: true })
+      for (const f of readdirSync(oldAttach)) {
+        const src = join(oldAttach, f)
+        const dst = join(newAttach, f)
+        if (!existsSync(dst) && statSync(src).isFile()) {
+          copyFileSync(src, dst)
+        }
+      }
+      console.log(`[migrate] 첨부파일 복사 완료`)
+    }
+
+    config.dataPath = newDefault
+    saveConfig(config)
+    console.log(`[migrate] 마이그레이션 완료 — 새 dataPath: ${newDefault}`)
+  } catch (err) {
+    console.error(`[migrate] 마이그레이션 실패 — 기존 경로 유지:`, err)
+  }
+}
+
+migrateDataPath()
 
 /* ─────────────────────────── DB 초기화 ──────────────────────────── */
 
@@ -59,94 +142,10 @@ function openDatabase(): Database.Database {
   const dbPath = join(config.dataPath, 'wition.db')
   const database = new Database(dbPath)
   database.pragma('journal_mode = WAL')
+  database.pragma('busy_timeout = 5000')
   database.pragma('foreign_keys = ON')
   initializeSchema(database)
   return database
-}
-
-/* ─────────────────────── 동시 접근 잠금 (OneDrive 공유용) ──────────────── */
-
-let lockFilePath = ''
-
-interface LockInfo {
-  host: string
-  pid: number
-  startedAt: string
-  version?: string
-}
-
-function getLockFilePath(): string {
-  return join(config.dataPath, 'wition.lock')
-}
-
-function checkLock(): LockInfo | null {
-  const lockPath = getLockFilePath()
-  if (!existsSync(lockPath)) return null
-  try {
-    const info: LockInfo = JSON.parse(readFileSync(lockPath, 'utf-8'))
-    if (info.host === hostname() && info.pid === process.pid) return null
-    if (info.host === hostname()) {
-      try { process.kill(info.pid, 0); return info }
-      catch { return null }
-    }
-    const lockAge = Date.now() - new Date(info.startedAt).getTime()
-    if (lockAge > 5 * 60 * 1000) return null
-    return info
-  } catch {
-    return null
-  }
-}
-
-function acquireLock(): boolean {
-  const existing = checkLock()
-  if (existing) return false
-  ensureDataDir()
-  lockFilePath = getLockFilePath()
-  const info: LockInfo = {
-    host: hostname(),
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    version: app.getVersion()
-  }
-  writeFileSync(lockFilePath, JSON.stringify(info, null, 2), 'utf-8')
-  return true
-}
-
-function releaseLock(): void {
-  if (lockFilePath && existsSync(lockFilePath)) {
-    try {
-      // 자기 자신의 락인지 확인 후 삭제 (비정상 종료 개선 #15)
-      const raw = readFileSync(lockFilePath, 'utf-8')
-      const info: LockInfo = JSON.parse(raw)
-      if (info.host === hostname() && info.pid === process.pid) {
-        unlinkSync(lockFilePath)
-      }
-    } catch { /* 무시 */ }
-    lockFilePath = ''
-  }
-}
-
-let lockInterval: ReturnType<typeof setInterval> | null = null
-
-function startLockHeartbeat(): void {
-  lockInterval = setInterval(() => {
-    if (lockFilePath && existsSync(lockFilePath)) {
-      const info: LockInfo = {
-        host: hostname(),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        version: app.getVersion()
-      }
-      try { writeFileSync(lockFilePath, JSON.stringify(info, null, 2), 'utf-8') } catch { /* 무시 */ }
-    }
-  }, 60 * 1000)
-}
-
-function stopLockHeartbeat(): void {
-  if (lockInterval) {
-    clearInterval(lockInterval)
-    lockInterval = null
-  }
 }
 
 /* ─────────────────── 자동 백업 ─────────────────────────────── */
@@ -199,18 +198,121 @@ function stopAutoBackup(): void {
   if (backupInterval) { clearInterval(backupInterval); backupInterval = null }
 }
 
-/* ─────────────── OneDrive 충돌 파일 감지 (#14) ────────────────── */
+/* ─────────────────────── 알람 타이머 ──────────────────────────── */
 
-function detectConflictFiles(): string[] {
+let alarmInterval: ReturnType<typeof setInterval> | null = null
+
+let lastResetDate = ''
+
+function checkAlarms(): void {
+  if (!db) return
   try {
-    const files = readdirSync(config.dataPath)
-    // OneDrive 충돌 파일 패턴: "filename (PC이름의 충돌 복사본).ext"
-    return files.filter(f =>
-      /충돌/.test(f) || /conflict/i.test(f) || /\(.*\s.*\)/.test(f.replace(/\.[^.]+$/, ''))
-    ).filter(f => f.includes('wition'))
-  } catch {
-    return []
+    const now = new Date()
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    const todayDow = now.getDay() // 0=일, 6=토
+
+    // 날짜가 바뀌면 반복 알람의 fired를 리셋
+    if (lastResetDate !== todayStr) {
+      console.log(`[alarm] 날짜 변경 감지: ${lastResetDate} → ${todayStr}, 반복 알람 fired 리셋`)
+      Q.resetRepeatingAlarmsFired(db)
+      lastResetDate = todayStr
+    }
+
+    const pending = Q.getPendingAlarms(db)
+    // 반복 알람도 포함
+    const repeating = Q.getRepeatingAlarms(db).filter(a => a.fired === 0)
+    // 중복 제거 (pending에 이미 포함된 것 제외)
+    const pendingIds = new Set(pending.map(a => a.id))
+    const allAlarms = [...pending, ...repeating.filter(a => !pendingIds.has(a.id))]
+
+    if (allAlarms.length === 0) return
+
+    // Windows 알림 지원 여부 체크
+    const notifSupported = Notification.isSupported()
+
+    for (const alarm of allAlarms) {
+      const shouldFire = shouldAlarmFire(alarm, todayStr, currentTime, todayDow)
+
+      if (shouldFire) {
+        console.log(`[alarm] 발동! id=${alarm.id}, time=${alarm.time}, label="${alarm.label}", repeat=${alarm.repeat}`)
+        Q.markAlarmFired(db, alarm.id)
+
+        const win = BrowserWindow.getAllWindows()[0]
+
+        // 1) 앱 내부 알림 (렌더러에 이벤트 전송 — 가장 확실)
+        if (win) {
+          win.webContents.send('alarm:fire', {
+            id: alarm.id,
+            day_id: alarm.day_id,
+            time: alarm.time,
+            label: alarm.label,
+            repeat: alarm.repeat
+          })
+          win.show()
+          win.focus()
+        }
+
+        // 2) OS 알림도 시도 (선택적)
+        try {
+          if (notifSupported) {
+            const notification = new Notification({
+              title: 'Wition 알람',
+              body: alarm.label || `${alarm.time} 알람`,
+              icon: getIconPath(),
+              silent: false
+            })
+            notification.on('click', () => {
+              if (win) { win.show(); win.focus() }
+              win?.webContents.send('alarm:navigate', alarm.day_id)
+            })
+            notification.show()
+          }
+        } catch (notifErr) {
+          console.error('[alarm] OS Notification 실패 (앱 내부 알림은 정상):', notifErr)
+        }
+      }
+      // 일회성 알람이고, 지난 날짜 → fired 처리
+      else if (alarm.repeat === 'none' && alarm.day_id < todayStr) {
+        Q.markAlarmFired(db, alarm.id)
+      }
+    }
+  } catch (err) {
+    console.error('[alarm] check error:', err)
   }
+}
+
+function shouldAlarmFire(alarm: Q.AlarmRow, todayStr: string, currentTime: string, todayDow: number): boolean {
+  if (alarm.time > currentTime) return false
+
+  switch (alarm.repeat) {
+    case 'none':
+      return alarm.day_id === todayStr
+    case 'daily':
+      // 시작일(day_id) 이후부터만 발동
+      return todayStr >= alarm.day_id
+    case 'weekdays':
+      // 시작일 이후 + 평일만
+      return todayStr >= alarm.day_id && todayDow >= 1 && todayDow <= 5
+    case 'weekly': {
+      // 시작일 이후 + 원래 설정된 요일과 같은 요일에만 발동
+      if (todayStr < alarm.day_id) return false
+      const origDate = new Date(alarm.day_id + 'T00:00:00')
+      return origDate.getDay() === todayDow
+    }
+    default:
+      return alarm.day_id === todayStr
+  }
+}
+
+function startAlarmChecker(): void {
+  // 30초마다 알람 체크
+  checkAlarms()
+  alarmInterval = setInterval(checkAlarms, 30 * 1000)
+}
+
+function stopAlarmChecker(): void {
+  if (alarmInterval) { clearInterval(alarmInterval); alarmInterval = null }
 }
 
 /* ─────────────────────── 시스템 트레이 ──────────────────────────── */
@@ -218,36 +320,47 @@ function detectConflictFiles(): string[] {
 let tray: Tray | null = null
 let isQuitting = false   // 실제 종료 vs 트레이 최소화 구분
 
+function getIconPath(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'icon.ico')
+  }
+  return join(__dirname, '../../build/icon.ico')
+}
+
 function createTray(): void {
-  const iconPath = join(__dirname, '../../build/icon.ico')
-  tray = new Tray(iconPath)
-  tray.setToolTip('Wition')
+  try {
+    const iconPath = getIconPath()
+    tray = new Tray(iconPath)
+    tray.setToolTip('Wition')
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: '열기',
-      click: () => {
-        const win = BrowserWindow.getAllWindows()[0]
-        if (win) { win.show(); win.focus() }
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: '열기',
+        click: () => {
+          const win = BrowserWindow.getAllWindows()[0]
+          if (win) { win.show(); win.focus() }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '종료',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
       }
-    },
-    { type: 'separator' },
-    {
-      label: '종료',
-      click: () => {
-        isQuitting = true
-        app.quit()
-      }
-    }
-  ])
+    ])
 
-  tray.setContextMenu(contextMenu)
+    tray.setContextMenu(contextMenu)
 
-  // 트레이 아이콘 더블클릭 → 창 복원
-  tray.on('double-click', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (win) { win.show(); win.focus() }
-  })
+    // 트레이 아이콘 더블클릭 → 창 복원
+    tray.on('double-click', () => {
+      const win = BrowserWindow.getAllWindows()[0]
+      if (win) { win.show(); win.focus() }
+    })
+  } catch (err) {
+    console.error('Tray creation failed:', err)
+  }
 }
 
 /* ─────────────────────────── 윈도우 ─────────────────────────────── */
@@ -265,7 +378,7 @@ function createWindow(): BrowserWindow {
     backgroundColor: isDark ? '#111827' : '#ffffff',
     frame: false,
     show: false,
-    icon: join(__dirname, '../../build/icon.ico'),
+    icon: getIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       nodeIntegration: false,
@@ -335,24 +448,47 @@ function registerIpcHandlers(): void {
     catch (err) { console.error('search error:', err); return [] }
   })
 
-  // DB 쓰기
+  // DB 쓰기 (로컬 즉시 + Supabase 백그라운드 동기화)
   ipcMain.handle('db:upsertNoteItem', (_e, item: Q.NoteItemRow) => {
-    try { return Q.upsertNoteItem(db, item) ?? null }
+    try {
+      const day = Q.upsertNoteItem(db, item) ?? null
+      // 백그라운드 동기화
+      const savedItem = db.prepare('SELECT * FROM note_item WHERE id = ?').get(item.id) as Q.NoteItemRow
+      if (savedItem) Sync.syncNoteItem(savedItem)
+      if (day) Sync.syncNoteDay(day)
+      return day
+    }
     catch (err) { console.error('upsertNoteItem error:', err); return null }
   })
 
   ipcMain.handle('db:deleteNoteItem', (_e, id: string, dayId: string) => {
-    try { return Q.deleteNoteItem(db, id, dayId) ?? null }
+    try {
+      const day = Q.deleteNoteItem(db, id, dayId) ?? null
+      // 백그라운드 동기화
+      Sync.syncDeleteNoteItem(id)
+      if (day) Sync.syncNoteDay(day)
+      return day
+    }
     catch (err) { console.error('deleteNoteItem error:', err); return null }
   })
 
   ipcMain.handle('db:reorderNoteItems', (_e, dayId: string, orderedIds: string[]) => {
-    try { Q.reorderNoteItems(db, dayId, orderedIds) }
+    try {
+      Q.reorderNoteItems(db, dayId, orderedIds)
+      // 백그라운드: 변경된 아이템들 동기화
+      const items = Q.getNoteItems(db, dayId)
+      items.forEach(item => Sync.syncNoteItem(item))
+    }
     catch (err) { console.error('reorderNoteItems error:', err) }
   })
 
   ipcMain.handle('db:updateMood', (_e, dayId: string, mood: string | null) => {
-    try { Q.updateMood(db, dayId, mood) }
+    try {
+      Q.updateMood(db, dayId, mood)
+      // 백그라운드 동기화
+      const day = Q.getNoteDay(db, dayId)
+      if (day) Sync.syncNoteDay(day)
+    }
     catch (err) { console.error('updateMood error:', err) }
   })
 
@@ -375,7 +511,12 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('app:setAutoLaunch', (_e, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled })
+    // portable exe는 Temp에 풀리므로, 원본 exe 경로를 사용
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe')
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      path: exePath
+    })
     config.autoLaunch = enabled
     saveConfig(config)
   })
@@ -396,33 +537,9 @@ function registerIpcHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return null
 
     const newPath = result.filePaths[0]
-
-    releaseLock()
     db.close()
     config.dataPath = newPath
     saveConfig(config)
-
-    if (!acquireLock()) {
-      const lockInfo = checkLock()
-      const confirmResult = dialog.showMessageBoxSync(win, {
-        type: 'warning',
-        title: '동시 접근 감지',
-        message: `이 경로를 다른 PC(${lockInfo?.host ?? '알 수 없음'})에서 사용 중입니다.\n강제로 전환하겠습니까?`,
-        buttons: ['강제 전환', '취소'],
-        defaultId: 1
-      })
-      if (confirmResult === 1) {
-        const oldConfig = loadConfig()
-        config.dataPath = oldConfig.dataPath
-        acquireLock()
-        db = openDatabase()
-        return null
-      }
-      lockFilePath = getLockFilePath()
-      const info: LockInfo = { host: hostname(), pid: process.pid, startedAt: new Date().toISOString() }
-      writeFileSync(lockFilePath, JSON.stringify(info, null, 2), 'utf-8')
-    }
-
     db = openDatabase()
     return newPath
   })
@@ -548,6 +665,8 @@ function registerIpcHandlers(): void {
         copyFileSync(srcPath, destPath)
         const stat = statSync(destPath)
         attached.push({ name, path: destName, size: stat.size })
+        // 백그라운드 동기화
+        Sync.syncAttachmentFile(attachDir, destName)
       } catch (err) {
         console.error('attachFile copy error:', err)
       }
@@ -556,13 +675,62 @@ function registerIpcHandlers(): void {
   })
 
   // 첨부 파일 열기
-  ipcMain.handle('app:openAttachment', (_e, fileName: string) => {
-    const filePath = join(config.dataPath, 'attachments', fileName)
-    if (existsSync(filePath)) {
-      shell.openPath(filePath)
+  ipcMain.handle('app:openAttachment', async (_e, fileName: string) => {
+    // attachments/ 폴더에서 찾기
+    let filePath = resolve(join(config.dataPath, 'attachments', fileName))
+
+    // 없으면 fileName 자체가 전체 경로인지 확인
+    if (!existsSync(filePath) && existsSync(fileName)) {
+      filePath = resolve(fileName)
+    }
+
+    if (!existsSync(filePath)) {
+      console.error('[openAttachment] 파일 없음:', filePath)
+      dialog.showMessageBox({
+        type: 'error',
+        title: '파일 열기 실패',
+        message: `파일을 찾을 수 없습니다:\n${filePath}`
+      })
+      return false
+    }
+
+    // pathToFileURL로 한글 경로 자동 인코딩 (file:/// + percent-encoding)
+    try {
+      await shell.openExternal(pathToFileURL(filePath).href)
+      return true
+    } catch (err) {
+      console.error('[openAttachment] 열기 실패:', err)
+      // 폴백: shell.openPath
+      const errMsg = await shell.openPath(filePath)
+      if (errMsg) {
+        console.error('[openAttachment] openPath도 실패:', errMsg)
+        return false
+      }
       return true
     }
-    return false
+  })
+
+  // ── 클립보드 이미지 저장 (스크린샷 붙여넣기) ──
+  ipcMain.handle('app:saveClipboardImage', (_e, base64: string) => {
+    try {
+      const attachDir = join(config.dataPath, 'attachments')
+      if (!existsSync(attachDir)) mkdirSync(attachDir, { recursive: true })
+
+      const ts = Date.now()
+      const fileName = `${ts}_screenshot.png`
+      const filePath = join(attachDir, fileName)
+
+      const buffer = Buffer.from(base64, 'base64')
+      writeFileSync(filePath, buffer)
+      const size = statSync(filePath).size
+
+      // 백그라운드 동기화
+      Sync.syncAttachmentFile(attachDir, fileName)
+      return { name: 'screenshot.png', path: fileName, size }
+    } catch (err) {
+      console.error('saveClipboardImage error:', err)
+      return null
+    }
   })
 
   // ── 자동 백업 설정 ──
@@ -615,9 +783,283 @@ function registerIpcHandlers(): void {
     return true
   })
 
-  // OneDrive 충돌 파일 감지 (#14)
-  ipcMain.handle('app:checkConflicts', () => {
-    return detectConflictFiles()
+  // ── 달력 패널 너비 영속화 ──
+  ipcMain.handle('app:getCalendarWidth', () => config.calendarWidth ?? 420)
+  ipcMain.handle('app:setCalendarWidth', (_e, width: number) => {
+    config.calendarWidth = width
+    saveConfig(config)
+  })
+
+  // ── 알람 ──
+  ipcMain.handle('db:getAlarms', (_e, dayId: string) => {
+    try { return Q.getAlarmsByDay(db, dayId) }
+    catch (err) { console.error('getAlarms error:', err); return [] }
+  })
+
+  ipcMain.handle('db:upsertAlarm', (_e, alarm: Q.AlarmRow) => {
+    try {
+      Q.upsertAlarm(db, alarm)
+      Sync.syncAlarm(alarm)
+      // 알람 저장 즉시 체크 (30초 주기를 기다리지 않음)
+      checkAlarms()
+      return true
+    }
+    catch (err) { console.error('upsertAlarm error:', err); return false }
+  })
+
+  ipcMain.handle('db:deleteAlarm', (_e, id: string) => {
+    try {
+      Q.deleteAlarm(db, id)
+      Sync.syncDeleteAlarm(id)
+      return true
+    }
+    catch (err) { console.error('deleteAlarm error:', err); return false }
+  })
+
+  ipcMain.handle('db:getAlarmDaysByMonth', (_e, yearMonth: string) => {
+    try { return Q.getAlarmDaysByMonth(db, yearMonth) }
+    catch (err) { console.error('getAlarmDaysByMonth error:', err); return [] }
+  })
+
+  ipcMain.handle('db:getUpcomingAlarms', (_e, todayStr: string) => {
+    try { return Q.getUpcomingAlarms(db, todayStr) }
+    catch (err) { console.error('getUpcomingAlarms error:', err); return [] }
+  })
+
+  // ── 동기화 ──
+  ipcMain.handle('sync:now', async () => {
+    if (!Sync.isOnline() || !db) return { ok: false, reason: 'offline' }
+    if (Sync.isSyncing()) return { ok: false, reason: 'already_syncing' }
+    const reachable = await Sync.checkConnection()
+    if (!reachable) return { ok: false, reason: 'unreachable' }
+    try {
+      const { pulled, pushed, cleaned, syncedAt } = await Sync.fullSync(db!, config.lastSyncAt)
+      // syncedAt이 0이면 lastSyncAt을 덮어쓰지 않음 (동기화 실패/중복 방지)
+      if (syncedAt > 0) {
+        config.lastSyncAt = syncedAt
+        saveConfig(config)
+      }
+      // 첨부파일 동기화
+      const attachDir = join(config.dataPath, 'attachments')
+      await Sync.pullAttachmentFiles(attachDir)
+      await Sync.pushAttachmentFiles(attachDir)
+
+      if (pulled > 0 || pushed > 0 || cleaned > 0) {
+        BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+      }
+      return { ok: true, pulled, pushed, cleaned }
+    } catch (err) {
+      return { ok: false, reason: String(err) }
+    }
+  })
+
+  ipcMain.handle('sync:getStatus', () => {
+    return {
+      online: Sync.isOnline(),
+      reachable: Sync.isReachable(),
+      lastSyncAt: config.lastSyncAt ?? 0,
+    }
+  })
+
+  // ── 인증 (GoTrue) ──
+  const AUTH_URLS = [
+    process.env.VITE_SUPABASE_URL,       // Tailscale VPN IP (원격)
+    'http://localhost:8000',               // 로컬 (같은 PC)
+  ].filter(Boolean) as string[]
+  let AUTH_BASE = AUTH_URLS[0]
+  const AUTH_KEY = process.env.VITE_SUPABASE_ANON_KEY
+
+  // 앱 시작 시 접속 가능한 서버 자동 탐색
+  async function detectAuthBase() {
+    for (const base of AUTH_URLS) {
+      try {
+        const res = await net.fetch(`${base}/auth/v1/`, { method: 'GET', headers: { 'apikey': AUTH_KEY || '' } })
+        if (res.status > 0) { AUTH_BASE = base; console.log('[auth] 서버 연결:', base); return }
+      } catch { /* 다음 URL 시도 */ }
+    }
+    console.warn('[auth] 모든 서버 연결 실패, 기본값 사용:', AUTH_BASE)
+  }
+  detectAuthBase()
+
+  async function authFetch(path: string, opts: { method?: string; body?: unknown; token?: string } = {}) {
+    const url = `${AUTH_BASE}/auth/v1${path}`
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'apikey': AUTH_KEY || '',
+    }
+    if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
+    const res = await net.fetch(url, {
+      method: opts.method || 'GET',
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    })
+    const text = await res.text()
+    try { return { ok: res.ok, status: res.status, data: JSON.parse(text) } }
+    catch { return { ok: res.ok, status: res.status, data: text } }
+  }
+
+  // 회원가입
+  ipcMain.handle('auth:signup', async (_e, email: string, password: string) => {
+    try {
+      console.log('[auth:signup] URL:', `${AUTH_BASE}/auth/v1/signup`, 'KEY:', AUTH_KEY?.slice(0, 20) + '...')
+      const res = await authFetch('/signup', {
+        method: 'POST',
+        body: { email, password }
+      })
+      console.log('[auth:signup] status:', res.status, 'ok:', res.ok, 'data:', JSON.stringify(res.data).slice(0, 200))
+      if (!res.ok) return { ok: false, error: res.data?.msg || res.data?.error_description || '회원가입 실패' }
+      return { ok: true }
+    } catch (err) {
+      console.error('[auth:signup] error:', err)
+      return { ok: false, error: `서버 연결 실패: ${err}` }
+    }
+  })
+
+  // 로그인 (기존 세션 강제 종료 포함)
+  ipcMain.handle('auth:login', async (_e, email: string, password: string) => {
+    try {
+      // 1) 로그인
+      const res = await authFetch('/token?grant_type=password', {
+        method: 'POST',
+        body: { email, password }
+      })
+      if (!res.ok) return { ok: false, error: res.data?.msg || res.data?.error_description || '로그인 실패' }
+
+      const { access_token } = res.data
+
+      // 2) 기존 세션 모두 종료 (단일 세션 정책)
+      try {
+        await authFetch('/logout?scope=global', { method: 'POST', token: access_token })
+      } catch { /* 첫 로그인이면 무시 */ }
+
+      // 3) 다시 로그인 (새 토큰 발급)
+      const res2 = await authFetch('/token?grant_type=password', {
+        method: 'POST',
+        body: { email, password }
+      })
+      if (!res2.ok) return { ok: false, error: '세션 갱신 실패' }
+
+      const token2 = res2.data.access_token
+      const refresh2 = res2.data.refresh_token
+      const user2 = res2.data.user
+
+      // 4) config에 저장
+      config.authToken = token2
+      config.authRefreshToken = refresh2
+      config.authUser = { id: user2.id, email: user2.email }
+      saveConfig(config)
+
+      // 5) 동기화에 사용자 ID + GoTrue 세션 전달
+      Sync.setUserId(user2.id)
+      await Sync.setAuthSession(token2, refresh2)
+
+      return { ok: true, user: { id: user2.id, email: user2.email } }
+    } catch (err) {
+      return { ok: false, error: `서버 연결 실패: ${err}` }
+    }
+  })
+
+  // 로그아웃 (전역 — 모든 기기 세션 종료)
+  ipcMain.handle('auth:logout', async () => {
+    try {
+      const token = config.authToken
+      if (token) {
+        await authFetch('/logout?scope=global', { method: 'POST', token })
+      }
+    } catch { /* 무시 */ }
+    config.authToken = undefined
+    config.authRefreshToken = undefined
+    config.authUser = undefined
+    saveConfig(config)
+    Sync.setUserId(null)
+    await Sync.clearAuthSession()
+    return { ok: true }
+  })
+
+  // 현재 세션 확인
+  ipcMain.handle('auth:getSession', async () => {
+    const token = config.authToken
+    const refreshToken = config.authRefreshToken
+    const user = config.authUser
+
+    if (!token || !user) {
+      Sync.setUserId(null)
+      return { authenticated: false }
+    }
+    // 토큰 유효성 확인
+    try {
+      const res = await authFetch('/user', { token })
+      if (res.ok) {
+        Sync.setUserId(user.id)
+        if (refreshToken) await Sync.setAuthSession(token, refreshToken)
+        return { authenticated: true, user }
+      }
+      // 토큰 만료 → refresh 시도
+      if (refreshToken) {
+        const refresh = await authFetch('/token?grant_type=refresh_token', {
+          method: 'POST',
+          body: { refresh_token: refreshToken }
+        })
+        if (refresh.ok) {
+          config.authToken = refresh.data.access_token
+          config.authRefreshToken = refresh.data.refresh_token
+          config.authUser = { id: refresh.data.user.id, email: refresh.data.user.email }
+          saveConfig(config)
+          Sync.setUserId(refresh.data.user.id)
+          await Sync.setAuthSession(refresh.data.access_token, refresh.data.refresh_token)
+          return { authenticated: true, user: config.authUser }
+        }
+      }
+      // refresh도 실패 → 로그아웃
+      config.authToken = undefined
+      config.authRefreshToken = undefined
+      config.authUser = undefined
+      saveConfig(config)
+      Sync.setUserId(null)
+      return { authenticated: false, reason: 'session_expired' }
+    } catch {
+      // 서버 연결 불가 → 오프라인 인증
+      Sync.setUserId(user.id)
+      return { authenticated: true, user, offline: true }
+    }
+  })
+
+  // ── 로그인 정보 기억 (safeStorage 암호화) ──
+  ipcMain.handle('auth:saveCredentials', (_e, email: string, password: string) => {
+    try {
+      config.savedEmail = email
+      if (safeStorage.isEncryptionAvailable()) {
+        config.savedPasswordEnc = safeStorage.encryptString(password).toString('base64')
+      } else {
+        config.savedPasswordEnc = Buffer.from(password).toString('base64')
+      }
+      saveConfig(config)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('auth:getCredentials', () => {
+    if (!config.savedEmail || !config.savedPasswordEnc) return { ok: false }
+    try {
+      let password: string
+      if (safeStorage.isEncryptionAvailable()) {
+        password = safeStorage.decryptString(Buffer.from(config.savedPasswordEnc, 'base64'))
+      } else {
+        password = Buffer.from(config.savedPasswordEnc, 'base64').toString()
+      }
+      return { ok: true, email: config.savedEmail, password }
+    } catch {
+      return { ok: false }
+    }
+  })
+
+  ipcMain.handle('auth:clearCredentials', () => {
+    config.savedEmail = undefined
+    config.savedPasswordEnc = undefined
+    saveConfig(config)
+    return { ok: true }
   })
 
   // 윈도우 컨트롤 (frameless 타이틀바)
@@ -631,80 +1073,237 @@ function registerIpcHandlers(): void {
 
 /* ──────────────────────────── 앱 시작 ────────────────────────────── */
 
-app.whenReady().then(() => {
-  if (!acquireLock()) {
-    const lockInfo = checkLock()
-    const msg = lockInfo
-      ? `다른 PC(${lockInfo.host})에서 Wition을 사용 중입니다.\n동시에 사용하면 데이터가 손상될 수 있습니다.\n\n강제로 열겠습니까?`
-      : '다른 곳에서 Wition을 사용 중입니다.\n강제로 열겠습니까?'
+app.setAppUserModelId('com.wition.app')
 
-    const result = dialog.showMessageBoxSync({
-      type: 'warning',
-      title: 'Wition - 동시 접근 감지',
-      message: msg,
-      buttons: ['강제 열기', '종료'],
-      defaultId: 1,
-      cancelId: 1
-    })
+/* ─────────────────── 중복 실행 방지 (Single Instance) ────────────────── */
 
-    if (result === 1) {
-      app.quit()
-      return
-    }
-    lockFilePath = getLockFilePath()
-    const info: LockInfo = { host: hostname(), pid: process.pid, startedAt: new Date().toISOString() }
-    writeFileSync(lockFilePath, JSON.stringify(info, null, 2), 'utf-8')
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  // 이미 실행 중인 인스턴스가 있으면 즉시 종료
+  try { appendFileSync(crashLogPath, `[${new Date().toISOString()}] SingleInstanceLock 실패 — 다른 인스턴스 실행 중. 종료합니다.\n`) } catch {}
+  app.quit()
+}
+
+app.on('second-instance', () => {
+  // 두 번째 인스턴스가 실행되면, 기존 창을 포커스
+  const win = BrowserWindow.getAllWindows()[0]
+  if (win) {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
   }
+})
 
-  startLockHeartbeat()
+app.whenReady().then(() => {
   db = openDatabase()
   registerIpcHandlers()
   startAutoBackup()
+  startAlarmChecker()
   createTray()
   createWindow()
 
-  // 시작 시 OneDrive 충돌 파일 확인
-  const conflicts = detectConflictFiles()
-  if (conflicts.length > 0) {
-    dialog.showMessageBox({
-      type: 'warning',
-      title: 'OneDrive 동기화 충돌 감지',
-      message: `다음 충돌 파일이 발견되었습니다:\n${conflicts.join('\n')}\n\n데이터 폴더를 확인해주세요.`
-    })
+  // ── 하이브리드 동기화 (Supabase + OneDrive) ──
+  const syncLogPath = join(app.getPath('userData'), 'sync.log')
+  const syncLog = (msg: string) => {
+    const line = `[${new Date().toISOString()}] ${msg}\n`
+    console.log(msg)
+    try { writeFileSync(syncLogPath, line, { flag: 'a' }) } catch {}
   }
+
+  Sync.setLogFn(syncLog)
+  const HEALTH_CHECK_MS = 60 * 1000        // 1분마다 연결 상태 체크
+  let wasReachable = false
+
+  /** 저장된 credentials로 자동 재로그인 */
+  async function autoReLogin(): Promise<boolean> {
+    if (!config.savedEmail || !config.savedPasswordEnc) return false
+    try {
+      let password: string
+      if (safeStorage.isEncryptionAvailable()) {
+        password = safeStorage.decryptString(Buffer.from(config.savedPasswordEnc, 'base64'))
+      } else {
+        password = Buffer.from(config.savedPasswordEnc, 'base64').toString()
+      }
+      syncLog('[autoReLogin] 저장된 credentials로 재로그인 시도...')
+      // GoTrue 인증 API 직접 호출 (authFetch는 다른 스코프에 있으므로 net.fetch 사용)
+      const authBase = process.env.VITE_SUPABASE_URL || 'http://localhost:8000'
+      const authKey = process.env.VITE_SUPABASE_ANON_KEY || ''
+      const fetchRes = await net.fetch(`${authBase}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': authKey },
+        body: JSON.stringify({ email: config.savedEmail, password })
+      })
+      const text = await fetchRes.text()
+      let data: Record<string, unknown>
+      try { data = JSON.parse(text) } catch { data = {} }
+      if (!fetchRes.ok) {
+        syncLog(`[autoReLogin] 실패: ${(data as any)?.error_description || fetchRes.status}`)
+        return false
+      }
+      const { access_token, refresh_token, user } = data as any
+      config.authToken = access_token
+      config.authRefreshToken = refresh_token
+      config.authUser = { id: user.id, email: user.email }
+      saveConfig(config)
+      Sync.setUserId(user.id)
+      await Sync.setAuthSession(access_token, refresh_token)
+      syncLog('[autoReLogin] 성공')
+      return true
+    } catch (err) {
+      syncLog(`[autoReLogin] 에러: ${err}`)
+      return false
+    }
+  }
+
+  /** 동기화 실행 + UI 알림 */
+  async function runSync() {
+    if (!Sync.isOnline() || !db) return
+    const reachable = await Sync.checkConnection()
+    broadcastSyncStatus(reachable ? 'syncing' : 'offline')
+    if (!reachable) {
+      syncLog('서버 연결 불가 — OneDrive 모드')
+      return
+    }
+    try {
+      syncLog('fullSync 시작...')
+      const { pulled, pushed, cleaned, syncedAt, authFailed } = await Sync.fullSync(db!, config.lastSyncAt)
+
+      // 인증 실패 시 저장된 credentials로 자동 재로그인 후 재시도
+      if (authFailed) {
+        syncLog('인증 실패 → 자동 재로그인 시도')
+        const ok = await autoReLogin()
+        if (ok) {
+          syncLog('재로그인 성공 → fullSync 재시도')
+          const retry = await Sync.fullSync(db!, config.lastSyncAt)
+          if (retry.syncedAt > 0) {
+            config.lastSyncAt = retry.syncedAt
+            saveConfig(config)
+          }
+          if (retry.pulled > 0 || retry.pushed > 0 || retry.cleaned > 0) {
+            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+          }
+          broadcastSyncStatus('online')
+          return
+        } else {
+          syncLog('자동 재로그인 실패 → UI에 로그인 필요 알림')
+          broadcastSyncStatus('auth_required')
+          return
+        }
+      }
+
+      if (syncedAt > 0) {
+        config.lastSyncAt = syncedAt
+        saveConfig(config)
+      }
+
+      // 첨부파일 동기화
+      const attachDir = join(config.dataPath, 'attachments')
+      const filePulled = await Sync.pullAttachmentFiles(attachDir)
+      const filePushed = await Sync.pushAttachmentFiles(attachDir)
+
+      syncLog(`fullSync 완료: pulled=${pulled}, pushed=${pushed}, files: pulled=${filePulled}, pushed=${filePushed}`)
+      broadcastSyncStatus('online')
+      if (pulled > 0 || pushed > 0 || cleaned > 0 || filePulled > 0) {
+        BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+      }
+    } catch (err) {
+      syncLog(`fullSync 실패: ${err}`)
+      broadcastSyncStatus('error')
+    }
+  }
+
+  function broadcastSyncStatus(status: string) {
+    BrowserWindow.getAllWindows().forEach(w =>
+      w.webContents.send('sync:status', status)
+    )
+  }
+
+  // 앱 시작 시 저장된 인증 정보로 Sync 세션 복원
+  if (config.authUser?.id) {
+    Sync.setUserId(config.authUser.id)
+    syncLog(`userId 복원: ${config.authUser.id}`)
+  }
+
+  Sync.initSync().then(async online => {
+    syncLog(`initSync: online=${online}, db=${!!db}, lastSyncAt=${config.lastSyncAt}, userId=${Sync.getUserId()}`)
+
+    // 저장된 토큰으로 Supabase 세션 복원
+    if (online && config.authToken && config.authRefreshToken) {
+      await Sync.setAuthSession(config.authToken, config.authRefreshToken)
+      syncLog('Supabase 세션 복원 완료 (저장된 토큰)')
+    }
+
+    // 토큰이 없지만 저장된 credentials가 있으면 → 자동 재로그인
+    if (online && !Sync.getUserId() && config.savedEmail && config.savedPasswordEnc) {
+      syncLog('토큰 없음 → 저장된 credentials로 자동 로그인 시도')
+      const ok = await autoReLogin()
+      if (ok) {
+        syncLog(`자동 로그인 성공 — userId: ${Sync.getUserId()}`)
+      } else {
+        syncLog('자동 로그인 실패 → 수동 로그인 필요')
+      }
+    }
+
+    if (Sync.isOnline() && db) {
+      // 앱 시작 3초 후 첫 동기화 + Realtime 구독 시작
+      setTimeout(async () => {
+        await runSync()
+        // Realtime 구독: DB 변경 즉시 감지 → UI 갱신
+        Sync.startRealtime(db, () => {
+          syncLog('[Realtime] 변경 감지 → UI 갱신')
+          BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+        })
+        syncLog('[Realtime] 실시간 구독 시작')
+      }, 3000)
+
+      // 폴링: 10초 간격으로 동기화 (Realtime 보완)
+      setInterval(() => runSync(), 10 * 1000)
+
+      // 1분마다 연결 상태 체크 (오프라인→온라인 전환 시 즉시 동기화 + Realtime 재연결)
+      setInterval(async () => {
+        const nowReachable = await Sync.checkConnection()
+        broadcastSyncStatus(nowReachable ? 'online' : 'offline')
+        if (nowReachable && !wasReachable) {
+          syncLog('네트워크 복구 감지 → 즉시 동기화 + Realtime 재연결')
+          runSync()
+          Sync.startRealtime(db, () => {
+            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+          })
+        }
+        wasReachable = nowReachable
+      }, HEALTH_CHECK_MS)
+    } else {
+      syncLog('Supabase 미설정 — OneDrive 전용 모드')
+      broadcastSyncStatus('offline')
+    }
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-// 비정상 종료 시에도 락 해제 시도 (#15)
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err)
-  releaseLock()
 })
 
 process.on('SIGTERM', () => {
-  stopLockHeartbeat()
-  releaseLock()
   db?.close()
 })
 
 app.on('before-quit', () => {
   isQuitting = true
+  Sync.stopRealtime()
   // 종료 시 마지막 백업 실행
   try { runAutoBackup() } catch (e) { console.error('Exit backup failed:', e) }
   stopAutoBackup()
-  stopLockHeartbeat()
-  releaseLock()
+  stopAlarmChecker()
 })
 
 app.on('window-all-closed', () => {
   // 트레이 모드에서는 창이 닫혀도 앱 종료하지 않음
   if (!isQuitting) return
   stopAutoBackup()
-  stopLockHeartbeat()
-  releaseLock()
   db?.close()
   if (process.platform !== 'darwin') app.quit()
 })

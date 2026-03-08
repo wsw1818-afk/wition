@@ -33,14 +33,59 @@ const api = {
   attachFile:       () => ipcRenderer.invoke('app:attachFile'),
   openAttachment:   (fileName: string) => ipcRenderer.invoke('app:openAttachment', fileName),
 
+  // ── 클립보드 이미지 저장 ──
+  saveClipboardImage: (base64: string) => ipcRenderer.invoke('app:saveClipboardImage', base64) as Promise<{ name: string; path: string; size: number } | null>,
+
   // ── 자동 백업 ──
   getBackupConfig:  () => ipcRenderer.invoke('app:getBackupConfig'),
   setBackupConfig:  (cfg: Record<string, unknown>) => ipcRenderer.invoke('app:setBackupConfig', cfg),
   changeBackupPath: () => ipcRenderer.invoke('app:changeBackupPath'),
   runBackupNow:     () => ipcRenderer.invoke('app:runBackupNow'),
 
-  // ── OneDrive 충돌 감지 ──
-  checkConflicts: () => ipcRenderer.invoke('app:checkConflicts'),
+  // ── 달력 패널 너비 ──
+  getCalendarWidth: () => ipcRenderer.invoke('app:getCalendarWidth') as Promise<number>,
+  setCalendarWidth: (width: number) => ipcRenderer.invoke('app:setCalendarWidth', width),
+
+  // ── 동기화 ──
+  syncNow:        () => ipcRenderer.invoke('sync:now'),
+  getSyncStatus:  () => ipcRenderer.invoke('sync:getStatus'),
+  onSyncDone: (cb: () => void) => {
+    ipcRenderer.on('sync:done', cb)
+    return () => { ipcRenderer.removeListener('sync:done', cb) }
+  },
+  onSyncStatus: (cb: (status: string) => void) => {
+    const handler = (_e: unknown, status: string) => cb(status)
+    ipcRenderer.on('sync:status', handler)
+    return () => { ipcRenderer.removeListener('sync:status', handler) }
+  },
+
+  // ── 알람 ──
+  getAlarms:          (dayId: string) => ipcRenderer.invoke('db:getAlarms', dayId),
+  upsertAlarm:        (alarm: unknown) => ipcRenderer.invoke('db:upsertAlarm', alarm),
+  deleteAlarm:        (id: string) => ipcRenderer.invoke('db:deleteAlarm', id),
+  getAlarmDaysByMonth:(yearMonth: string) => ipcRenderer.invoke('db:getAlarmDaysByMonth', yearMonth),
+  getUpcomingAlarms:  (todayStr: string) => ipcRenderer.invoke('db:getUpcomingAlarms', todayStr),
+
+  // ── 알람 이벤트 ──
+  onAlarmNavigate: (cb: (dayId: string) => void) => {
+    const handler = (_e: unknown, dayId: string) => cb(dayId)
+    ipcRenderer.on('alarm:navigate', handler)
+    return () => { ipcRenderer.removeListener('alarm:navigate', handler) }
+  },
+  onAlarmFire: (cb: (alarm: { id: string; day_id: string; time: string; label: string; repeat: string }) => void) => {
+    const handler = (_e: unknown, alarm: { id: string; day_id: string; time: string; label: string; repeat: string }) => cb(alarm)
+    ipcRenderer.on('alarm:fire', handler)
+    return () => { ipcRenderer.removeListener('alarm:fire', handler) }
+  },
+
+  // ── 인증 ──
+  authSignup:          (email: string, password: string) => ipcRenderer.invoke('auth:signup', email, password) as Promise<{ ok: boolean; error?: string }>,
+  authLogin:           (email: string, password: string) => ipcRenderer.invoke('auth:login', email, password) as Promise<{ ok: boolean; user?: { id: string; email: string }; error?: string }>,
+  authLogout:          () => ipcRenderer.invoke('auth:logout') as Promise<{ ok: boolean }>,
+  authGetSession:      () => ipcRenderer.invoke('auth:getSession') as Promise<{ authenticated: boolean; user?: { id: string; email: string }; offline?: boolean; reason?: string }>,
+  authSaveCredentials: (email: string, password: string) => ipcRenderer.invoke('auth:saveCredentials', email, password) as Promise<{ ok: boolean }>,
+  authGetCredentials:  () => ipcRenderer.invoke('auth:getCredentials') as Promise<{ ok: boolean; email?: string; password?: string }>,
+  authClearCredentials:() => ipcRenderer.invoke('auth:clearCredentials') as Promise<{ ok: boolean }>,
 
   // ── 윈도우 컨트롤 (frameless) ──
   minimize: () => ipcRenderer.send('win:minimize'),

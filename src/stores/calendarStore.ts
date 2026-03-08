@@ -9,6 +9,8 @@ interface CalendarState {
   selectedDate: string | null
   /** 해당 월의 NoteDay 맵 (key: "YYYY-MM-DD") */
   dayMap: Record<string, NoteDay>
+  /** 해당 월에서 알람이 있는 날짜 세트 */
+  alarmDays: Set<string>
   loading: boolean
 }
 
@@ -29,15 +31,19 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   currentMonth: dayjs().format('YYYY-MM'),
   selectedDate: null,
   dayMap: {},
+  alarmDays: new Set<string>(),
   loading: false,
 
   loadMonth: async (yearMonth) => {
     set({ loading: true, currentMonth: yearMonth })
     try {
-      const rows = await window.api.getNoteDays(yearMonth)
+      const [rows, alarmDayList] = await Promise.all([
+        window.api.getNoteDays(yearMonth),
+        window.api.getAlarmDaysByMonth(yearMonth),
+      ])
       const map: Record<string, NoteDay> = {}
       for (const r of rows) map[r.id] = r
-      set({ dayMap: map })
+      set({ dayMap: map, alarmDays: new Set(alarmDayList) })
     } catch (err) {
       console.error('loadMonth:', err)
     } finally {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import type { InputBarHandle } from './InputBar'
 import dayjs from 'dayjs'
 import 'dayjs/locale/ko'
@@ -10,12 +10,13 @@ import { InputBar } from './InputBar'
 import { EmptyState } from '../common/EmptyState'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 import { SortableBlock } from './SortableBlock'
+import { AlarmPanel } from './AlarmPanel'
 
 dayjs.locale('ko')
 
 export function DayDetailView() {
   const { selectedDate, clearSelection, patchDay } = useCalendarStore()
-  const { items, loading, load, addText, addChecklist, update, remove, togglePin, reset, reorder } = useDayStore()
+  const { items, loading, load, addText, addChecklist, addBlock, update, remove, togglePin, reset, reorder } = useDayStore()
   const inputRef = useRef<InputBarHandle>(null)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const sensors = useSensors(
@@ -49,6 +50,11 @@ export function DayDetailView() {
 
   async function handleAddChecklist(text?: string) {
     const day = await addChecklist(text)
+    if (day) patchDay(day)
+  }
+
+  async function handleAddBlock(type: import('../../types').BlockType, content?: string) {
+    const day = await addBlock(type, content)
     if (day) patchDay(day)
   }
 
@@ -91,6 +97,40 @@ export function DayDetailView() {
     }
   }
 
+  // 클립보드 이미지(스크린샷) 붙여넣기
+  const handlePaste = useCallback(async (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        const blob = item.getAsFile()
+        if (!blob) continue
+
+        const reader = new FileReader()
+        reader.onload = async () => {
+          const base64 = (reader.result as string).split(',')[1]
+          const result = await window.api.saveClipboardImage(base64)
+          if (result) {
+            const sizeStr = result.size < 1024 ? `${result.size}B`
+              : result.size < 1024 * 1024 ? `${(result.size / 1024).toFixed(1)}KB`
+              : `${(result.size / (1024 * 1024)).toFixed(1)}MB`
+            const day = await addText(`📷 ${result.name} (${sizeStr})\n[file:${result.path}]`)
+            if (day) patchDay(day)
+          }
+        }
+        reader.readAsDataURL(blob)
+        return
+      }
+    }
+  }, [addText, patchDay])
+
+  useEffect(() => {
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [handlePaste])
+
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     if (over && active.id !== over.id) {
@@ -121,6 +161,8 @@ export function DayDetailView() {
         </div>
       </div>
 
+      <AlarmPanel dayId={selectedDate} />
+
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-gray-400 text-sm">불러오는 중...</div>
@@ -129,7 +171,7 @@ export function DayDetailView() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-              <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              <div className="flex flex-col gap-1.5 py-1">
                 {items.map((item) => (
                   <SortableBlock
                     key={item.id}
@@ -146,7 +188,7 @@ export function DayDetailView() {
         )}
       </div>
 
-      <InputBar ref={inputRef} onAddText={handleAddText} onAddChecklist={handleAddChecklist} onAttachFile={handleAttachFile} />
+      <InputBar ref={inputRef} onAddText={handleAddText} onAddChecklist={handleAddChecklist} onAddBlock={handleAddBlock} onAttachFile={handleAttachFile} />
 
       <ConfirmDialog
         open={!!deleteTarget}

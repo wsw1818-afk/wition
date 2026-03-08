@@ -11,7 +11,7 @@
     "outDir": "dist-electron"
   },
   "include": [
-    "electron/**/*.ts",
+    "src-main/**/*.ts",
     "electron.vite.config.ts"
   ]
 }

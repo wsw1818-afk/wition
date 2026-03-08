@@ -79,11 +79,12 @@ export function upsertNoteItem(db: Database.Database, item: NoteItemRow): NoteDa
   return run()
 }
 
-/** NoteItem 삭제 + NoteDay 캐시 자동 갱신 (트랜잭션) */
+/** NoteItem 삭제 + NoteDay 캐시 자동 갱신 + tombstone 기록 (트랜잭션) */
 export function deleteNoteItem(db: Database.Database, id: string, dayId: string): NoteDayRow | undefined {
   const now = Date.now()
   const run = db.transaction(() => {
     db.prepare('DELETE FROM note_item WHERE id = ?').run(id)
+    addTombstone(db, 'note_item', id)
     refreshDayCache(db, dayId, now)
     return getNoteDay(db, dayId)
   })
@@ -111,6 +112,90 @@ export function updateMood(db: Database.Database, dayId: string, mood: string | 
     VALUES (@id, @mood, 0, 0, @now)
     ON CONFLICT(id) DO UPDATE SET mood = @mood, updated_at = @now
   `).run({ id: dayId, mood, now })
+}
+
+/* ────────────────────────── 알람 CRUD ──────────────────────────── */
+
+export type RepeatType = 'none' | 'daily' | 'weekdays' | 'weekly'
+
+export interface AlarmRow {
+  id: string
+  day_id: string
+  time: string        // "HH:mm"
+  label: string
+  repeat: RepeatType  // 반복 유형
+  enabled: number     // 0 | 1
+  fired: number       // 0 | 1
+  created_at: number
+  updated_at: number
+}
+
+export function getAlarmsByDay(db: Database.Database, dayId: string): AlarmRow[] {
+  return db
+    .prepare('SELECT * FROM alarm WHERE day_id = ? ORDER BY time ASC')
+    .all(dayId) as AlarmRow[]
+}
+
+export function getPendingAlarms(db: Database.Database): AlarmRow[] {
+  return db
+    .prepare('SELECT * FROM alarm WHERE enabled = 1 AND fired = 0 ORDER BY day_id, time')
+    .all() as AlarmRow[]
+}
+
+export function upsertAlarm(db: Database.Database, alarm: AlarmRow): void {
+  db.prepare(`
+    INSERT INTO alarm (id, day_id, time, label, repeat, enabled, fired, created_at, updated_at)
+    VALUES (@id, @day_id, @time, @label, @repeat, @enabled, @fired, @created_at, @updated_at)
+    ON CONFLICT(id) DO UPDATE SET
+      day_id=@day_id, time=@time, label=@label, repeat=@repeat,
+      enabled=@enabled, fired=@fired, updated_at=@updated_at
+  `).run(alarm)
+}
+
+export function deleteAlarm(db: Database.Database, id: string): void {
+  db.prepare('DELETE FROM alarm WHERE id = ?').run(id)
+  addTombstone(db, 'alarm', id)
+}
+
+export function markAlarmFired(db: Database.Database, id: string): void {
+  db.prepare('UPDATE alarm SET fired = 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
+}
+
+/** 월간 알람이 있는 날짜 목록 (달력 아이콘 표시용) */
+export function getAlarmDaysByMonth(db: Database.Database, yearMonth: string): string[] {
+  const pattern = `${yearMonth}-%`
+  const rows = db
+    .prepare('SELECT DISTINCT day_id FROM alarm WHERE day_id LIKE ? AND enabled = 1')
+    .all(pattern) as Array<{ day_id: string }>
+  return rows.map(r => r.day_id)
+}
+
+/** 다가오는 알람 (일회성은 오늘 이후, 반복은 시작일 이전도 포함, 최대 20건) */
+export function getUpcomingAlarms(db: Database.Database, todayStr: string): AlarmRow[] {
+  return db
+    .prepare(`
+      SELECT * FROM alarm
+      WHERE enabled = 1 AND (fired = 0 OR repeat != 'none')
+        AND (day_id >= ? OR repeat != 'none')
+      ORDER BY
+        CASE WHEN repeat != 'none' THEN 0 ELSE 1 END,
+        day_id ASC, time ASC
+      LIMIT 20
+    `)
+    .all(todayStr) as AlarmRow[]
+}
+
+/** 반복 알람 목록 (repeat != 'none') */
+export function getRepeatingAlarms(db: Database.Database): AlarmRow[] {
+  return db
+    .prepare("SELECT * FROM alarm WHERE repeat != 'none' AND enabled = 1 ORDER BY time ASC")
+    .all() as AlarmRow[]
+}
+
+/** 반복 알람 fired 리셋 (매일 자정 호출용) */
+export function resetRepeatingAlarmsFired(db: Database.Database): void {
+  db.prepare("UPDATE alarm SET fired = 0, updated_at = ? WHERE repeat != 'none' AND fired = 1")
+    .run(Date.now())
 }
 
 /* ────────────────────────── 내부 헬퍼 ──────────────────────────── */
@@ -147,4 +232,38 @@ function refreshDayCache(db: Database.Database, dayId: string, now: number): voi
     ON CONFLICT(id) DO UPDATE SET
       note_count = @count, has_notes = @hasNotes, summary = @summary, updated_at = @now
   `).run({ id: dayId, count, hasNotes: count > 0 ? 1 : 0, summary, now })
+}
+
+/* ────────────────────── 삭제 Tombstone ──────────────────────── */
+
+export interface DeletedItem {
+  table_name: string
+  item_id: string
+  deleted_at: number
+}
+
+/** 삭제 tombstone 기록 */
+export function addTombstone(db: Database.Database, tableName: string, itemId: string): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO deleted_items (table_name, item_id, deleted_at)
+    VALUES (?, ?, ?)
+  `).run(tableName, itemId, Date.now())
+}
+
+/** 미처리 tombstone 조회 */
+export function getTombstones(db: Database.Database): DeletedItem[] {
+  return db.prepare('SELECT * FROM deleted_items').all() as DeletedItem[]
+}
+
+/** tombstone 존재 여부 확인 */
+export function isTombstoned(db: Database.Database, tableName: string, itemId: string): boolean {
+  const row = db.prepare('SELECT 1 FROM deleted_items WHERE table_name = ? AND item_id = ?').get(tableName, itemId)
+  return !!row
+}
+
+/** 동기화 완료된 tombstone 삭제 */
+export function clearTombstones(db: Database.Database, tableName: string, itemIds: string[]): void {
+  if (itemIds.length === 0) return
+  const placeholders = itemIds.map(() => '?').join(',')
+  db.prepare(`DELETE FROM deleted_items WHERE table_name = ? AND item_id IN (${placeholders})`).run(tableName, ...itemIds)
 }

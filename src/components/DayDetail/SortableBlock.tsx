@@ -3,6 +3,13 @@ import { CSS } from '@dnd-kit/utilities'
 import type { NoteItem } from '../../types'
 import { TextBlock } from './TextBlock'
 import { ChecklistBlock } from './ChecklistBlock'
+import { HeadingBlock } from './HeadingBlock'
+import { ListBlock } from './ListBlock'
+import { QuoteBlock } from './QuoteBlock'
+import { DividerBlock } from './DividerBlock'
+import { CalloutBlock } from './CalloutBlock'
+import { CodeBlock } from './CodeBlock'
+import { ToggleBlock } from './ToggleBlock'
 
 interface Props {
   item: NoteItem
@@ -28,8 +35,51 @@ export function SortableBlock({ item, onUpdate, onTagsChange, onDelete, onToggle
     opacity: isDragging ? 0.5 : 1,
   }
 
+  function renderBlock() {
+    switch (item.type) {
+      case 'heading1':
+      case 'heading2':
+      case 'heading3':
+        return <HeadingBlock item={item} onUpdate={onUpdate} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'bulleted_list':
+      case 'numbered_list':
+        return <ListBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'quote':
+        return <QuoteBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'divider':
+        return <DividerBlock item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'callout':
+        return <CalloutBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'code':
+        return <CodeBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'toggle':
+        return <ToggleBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'checklist':
+        return <ChecklistBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+      case 'text':
+      default:
+        return <TextBlock item={item} onUpdate={onUpdate} onTagsChange={onTagsChange} onDelete={onDelete} onTogglePin={onTogglePin} />
+    }
+  }
+
+  function formatTime(epoch: number): string {
+    const d = new Date(epoch)
+    const h = String(d.getHours()).padStart(2, '0')
+    const m = String(d.getMinutes()).padStart(2, '0')
+    return `${h}:${m}`
+  }
+
+  const createdStr = formatTime(item.created_at)
+  const updatedStr = item.updated_at !== item.created_at ? formatTime(item.updated_at) : null
+
   return (
-    <div ref={setNodeRef} style={style} className="relative group/drag">
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="relative group/drag rounded-xl border border-gray-100 dark:border-gray-800
+                 bg-gray-50/60 dark:bg-gray-800/40 hover:border-gray-200 dark:hover:border-gray-700
+                 transition-colors"
+    >
       {/* 드래그 핸들 */}
       <div
         {...attributes}
@@ -52,23 +102,13 @@ export function SortableBlock({ item, onUpdate, onTagsChange, onDelete, onToggle
 
       {/* 블록 컨텐츠 */}
       <div className="pl-4">
-        {item.type === 'text' ? (
-          <TextBlock
-            item={item}
-            onUpdate={onUpdate}
-            onTagsChange={onTagsChange}
-            onDelete={onDelete}
-            onTogglePin={onTogglePin}
-          />
-        ) : (
-          <ChecklistBlock
-            item={item}
-            onUpdate={onUpdate}
-            onTagsChange={onTagsChange}
-            onDelete={onDelete}
-            onTogglePin={onTogglePin}
-          />
-        )}
+        {renderBlock()}
+      </div>
+
+      {/* 저장 시간 */}
+      <div className="absolute right-2 bottom-0.5
+                      text-[10px] text-gray-400 dark:text-gray-500 select-none pointer-events-none">
+        {createdStr}{updatedStr ? ` (수정 ${updatedStr})` : ''}
       </div>
     </div>
   )

@@ -1,17 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import dayjs from 'dayjs'
 import { useCalendarStore } from '../../stores/calendarStore'
 import { MonthNavigator } from './MonthNavigator'
 import { CalendarCell } from './CalendarCell'
+import { getHolidayMap } from '../../utils/holidays'
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
 
 export function CalendarView() {
-  const { currentMonth, selectedDate, dayMap, loadMonth, selectDate } = useCalendarStore()
+  const { currentMonth, selectedDate, dayMap, alarmDays, loadMonth, selectDate } = useCalendarStore()
 
   // 초기 로드 + 월 변경 시 로드
   useEffect(() => { loadMonth(currentMonth) }, [currentMonth])
 
+  const holidayMap = useMemo(() => getHolidayMap(currentMonth), [currentMonth])
   const today = dayjs().format('YYYY-MM-DD')
   const firstOfMonth = dayjs(currentMonth + '-01')
   const daysInMonth = firstOfMonth.daysInMonth()
@@ -68,6 +70,8 @@ export function CalendarView() {
             isToday={c.dateStr === today}
             isSelected={c.dateStr === selectedDate}
             isCurrentMonth={c.isCurrentMonth}
+            holiday={holidayMap[c.dateStr]}
+            hasAlarm={alarmDays.has(c.dateStr)}
             onClick={() => selectDate(c.dateStr)}
           />
         ))}
