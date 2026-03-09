@@ -116,7 +116,7 @@ services:
       SEED_SELF_HOST: "false"
       REPLICATION_MODE: RLS
       REPLICATION_POLL_INTERVAL: 100
-      SECURE_CHANNELS: "true"
+      SECURE_CHANNELS: "false"
       SLOT_NAME: supabase_realtime_rls
       TEMPORARY_SLOT: "true"
       MAX_REPLICATION_LAG_MB: 1000

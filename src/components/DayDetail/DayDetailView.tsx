@@ -18,6 +18,7 @@ export function DayDetailView() {
   const { selectedDate, clearSelection, patchDay } = useCalendarStore()
   const { items, loading, load, addText, addChecklist, addBlock, update, remove, togglePin, reset, reorder } = useDayStore()
   const inputRef = useRef<InputBarHandle>(null)
+  const listEndRef = useRef<HTMLDivElement>(null)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -45,17 +46,26 @@ export function DayDetailView() {
 
   async function handleAddText(text: string) {
     const day = await addText(text)
-    if (day) patchDay(day)
+    if (day) {
+      patchDay(day)
+      setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    }
   }
 
   async function handleAddChecklist(text?: string) {
     const day = await addChecklist(text)
-    if (day) patchDay(day)
+    if (day) {
+      patchDay(day)
+      setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    }
   }
 
   async function handleAddBlock(type: import('../../types').BlockType, content?: string) {
     const day = await addBlock(type, content)
-    if (day) patchDay(day)
+    if (day) {
+      patchDay(day)
+      setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    }
   }
 
   async function handleUpdate(id: string, content: string) {
@@ -182,6 +192,7 @@ export function DayDetailView() {
                     onTogglePin={() => handleTogglePin(item.id)}
                   />
                 ))}
+                <div ref={listEndRef} />
               </div>
             </SortableContext>
           </DndContext>

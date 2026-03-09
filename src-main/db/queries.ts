@@ -222,7 +222,16 @@ function refreshDayCache(db: Database.Database, dayId: string, now: number): voi
         summary = items.map(i => i.text).join(', ').slice(0, 80)
       } catch { /* 파싱 실패 시 null */ }
     } else {
-      summary = stat.first_content.slice(0, 80)
+      // 인라인 마크다운/파일 태그 제거하여 순수 텍스트만 추출
+      summary = stat.first_content
+        .replace(/\[file:.+?\]/g, '')       // [file:경로] 제거
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [링크](url) → 링크 텍스트만
+        .replace(/\*\*(.+?)\*\*/g, '$1')    // **굵게** → 굵게
+        .replace(/\*(.+?)\*/g, '$1')        // *기울임* → 기울임
+        .replace(/`(.+?)`/g, '$1')          // `코드` → 코드
+        .replace(/\n/g, ' ')                // 줄바꿈 → 공백
+        .trim()
+        .slice(0, 80) || null
     }
   }
 
@@ -232,6 +241,15 @@ function refreshDayCache(db: Database.Database, dayId: string, now: number): voi
     ON CONFLICT(id) DO UPDATE SET
       note_count = @count, has_notes = @hasNotes, summary = @summary, updated_at = @now
   `).run({ id: dayId, count, hasNotes: count > 0 ? 1 : 0, summary, now })
+}
+
+/** 모든 날짜의 summary 캐시를 재계산 (앱 시작 시 1회, updated_at 유지) */
+export function refreshAllSummaries(db: Database.Database): void {
+  const days = db.prepare('SELECT id, updated_at FROM note_day WHERE has_notes = 1').all() as Array<{ id: string; updated_at: number }>
+  for (const day of days) {
+    // updated_at을 기존 값으로 유지하여 push 트리거 방지
+    refreshDayCache(db, day.id, day.updated_at)
+  }
 }
 
 /* ────────────────────── 삭제 Tombstone ──────────────────────── */

@@ -47,19 +47,28 @@ export function SlashMenu({ filter, position, onSelect, onClose }: Props) {
 
   if (filtered.length === 0) return null
 
+  function handleItemClick(type: BlockType) {
+    onSelect(type)
+  }
+
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
+      className="fixed z-[9999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
                  rounded-lg shadow-xl py-1 max-h-[280px] w-64 overflow-y-auto"
       style={{ top: position.top, left: position.left }}
     >
       {filtered.map((item, i) => (
-        <button
+        <div
           key={item.type}
-          onClick={() => onSelect(item.type)}
+          role="button"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            handleItemClick(item.type)
+          }}
           onMouseEnter={() => setSelectedIndex(i)}
-          className={`w-full text-left px-3 py-2 flex items-center gap-3 transition-colors
+          className={`w-full text-left px-3 py-2 flex items-center gap-3 transition-colors cursor-pointer
             ${i === selectedIndex
               ? 'bg-accent-50 dark:bg-accent-500/10'
               : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}
@@ -72,7 +81,7 @@ export function SlashMenu({ filter, position, onSelect, onClose }: Props) {
             <div className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.label}</div>
             <div className="text-xs text-gray-400 truncate">{item.description}</div>
           </div>
-        </button>
+        </div>
       ))}
     </div>
   )

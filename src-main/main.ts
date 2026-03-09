@@ -13,7 +13,11 @@ const logCrash = (label: string, err: unknown) => {
   const msg = `[${new Date().toISOString()}] ${label}: ${err instanceof Error ? err.stack : String(err)}\n`
   try { appendFileSync(crashLogPath, msg) } catch {}
 }
-process.on('uncaughtException', (err) => { logCrash('uncaughtException', err); })
+process.on('uncaughtException', (err) => {
+  // portable exe 종료 시 임시 폴더 정리로 ENOENT 발생 → 무시
+  if (err && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT' && err.message?.includes('package.json')) return
+  logCrash('uncaughtException', err)
+})
 process.on('unhandledRejection', (err) => { logCrash('unhandledRejection', err); })
 
 /* ─────────────────────────── 설정 관리 ──────────────────────────── */
@@ -34,6 +38,8 @@ interface AppConfig {
   authUser?: { id: string; email: string }  // 로그인된 사용자 정보
   savedEmail?: string                       // 기억된 이메일
   savedPasswordEnc?: string                 // 기억된 비밀번호 (safeStorage 암호화, base64)
+  onedriveSyncPath?: string                 // OneDrive DB 동기화 경로
+  onedriveSyncEnabled?: boolean             // OneDrive 자동 동기화 활성화
 }
 
 const CONFIG_FILE = join(app.getPath('userData'), 'config.json')
@@ -196,6 +202,207 @@ function startAutoBackup(): void {
 
 function stopAutoBackup(): void {
   if (backupInterval) { clearInterval(backupInterval); backupInterval = null }
+}
+
+/* ─────────────────── OneDrive DB 동기화 ─────────────────────── */
+
+let onedriveSyncTimer: ReturnType<typeof setInterval> | null = null
+let onedriveSyncDebounce: ReturnType<typeof setTimeout> | null = null
+
+/** OneDrive 동기화 경로의 DB 파일 경로 */
+function getOneDriveDbPath(): string | null {
+  if (!config.onedriveSyncPath) return null
+  return join(config.onedriveSyncPath, 'wition.db')
+}
+
+/** 양방향 동기화: OneDrive DB에서 병합 후, 로컬 DB를 OneDrive로 복사 */
+function exportDbToOneDrive(): { ok: boolean; error?: string } {
+  const remotePath = getOneDriveDbPath()
+  if (!remotePath) return { ok: false, error: 'OneDrive 경로가 설정되지 않았습니다.' }
+  try {
+    const localDbPath = join(config.dataPath, 'wition.db')
+    if (!existsSync(localDbPath)) return { ok: false, error: '로컬 DB가 없습니다.' }
+    if (!existsSync(config.onedriveSyncPath!)) mkdirSync(config.onedriveSyncPath!, { recursive: true })
+
+    // 1) OneDrive DB가 있으면 먼저 병합 (다른 PC 데이터 보존)
+    if (existsSync(remotePath)) {
+      mergeFromOneDrive()
+    }
+
+    // 2) WAL 체크포인트 후 로컬 DB를 OneDrive로 복사
+    if (db) {
+      try { db.pragma('wal_checkpoint(TRUNCATE)') } catch {}
+    }
+    copyFileSync(localDbPath, remotePath)
+
+    // 3) 첨부파일 양방향 복사 (없는 파일만)
+    const localAttach = join(config.dataPath, 'attachments')
+    const remoteAttach = join(config.onedriveSyncPath!, 'attachments')
+    if (!existsSync(remoteAttach)) mkdirSync(remoteAttach, { recursive: true })
+    // 로컬 → OneDrive
+    if (existsSync(localAttach)) {
+      for (const f of readdirSync(localAttach)) {
+        const dest = join(remoteAttach, f)
+        if (!existsSync(dest)) {
+          try { copyFileSync(join(localAttach, f), dest) } catch {}
+        }
+      }
+    }
+    // OneDrive → 로컬 (다른 PC에서 추가한 첨부파일)
+    for (const f of readdirSync(remoteAttach)) {
+      if (!existsSync(localAttach)) mkdirSync(localAttach, { recursive: true })
+      const dest = join(localAttach, f)
+      if (!existsSync(dest)) {
+        try { copyFileSync(join(remoteAttach, f), dest) } catch {}
+      }
+    }
+
+    console.log('[onedrive-sync] 양방향 동기화 완료:', remotePath)
+    return { ok: true }
+  } catch (err) {
+    console.error('[onedrive-sync] 내보내기 실패:', err)
+    return { ok: false, error: String(err) }
+  }
+}
+
+/** OneDrive DB와 로컬 DB를 레코드 단위 병합 (데이터 유실 없음) */
+function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
+  const remotePath = getOneDriveDbPath()
+  if (!remotePath) return { ok: false, merged: 0, error: 'OneDrive 경로가 설정되지 않았습니다.' }
+  if (!existsSync(remotePath)) return { ok: false, merged: 0, error: 'OneDrive에 DB 파일이 없습니다.' }
+  if (!db) return { ok: false, merged: 0, error: '로컬 DB가 열려있지 않습니다.' }
+  let remoteDb: Database.Database | null = null
+  try {
+    // OneDrive DB를 읽기 전용으로 열기
+    remoteDb = new Database(remotePath, { readonly: true })
+    let merged = 0
+
+    // note_item 병합: 양쪽 모두의 레코드를 보존, updated_at이 더 큰 쪽 우선
+    const remoteItems = remoteDb.prepare('SELECT * FROM note_item').all() as Array<Record<string, unknown>>
+    const localSelectItem = db.prepare('SELECT updated_at FROM note_item WHERE id = ?')
+    const upsertItem = db.prepare(`
+      INSERT INTO note_item (id, day_id, type, content, tags, pinned, order_index, created_at, updated_at)
+      VALUES (@id, @day_id, @type, @content, @tags, @pinned, @order_index, @created_at, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        type=@type, content=@content, tags=@tags, pinned=@pinned,
+        order_index=@order_index, updated_at=@updated_at
+      WHERE @updated_at > note_item.updated_at
+    `)
+    const ensureDay = db.prepare(`
+      INSERT OR IGNORE INTO note_day (id, note_count, has_notes, updated_at)
+      VALUES (@id, 0, 0, @updated_at)
+    `)
+
+    // note_day 병합
+    const remoteDays = remoteDb.prepare('SELECT * FROM note_day').all() as Array<Record<string, unknown>>
+    const localSelectDay = db.prepare('SELECT updated_at FROM note_day WHERE id = ?')
+    const upsertDay = db.prepare(`
+      INSERT INTO note_day (id, mood, summary, note_count, has_notes, updated_at)
+      VALUES (@id, @mood, @summary, @note_count, @has_notes, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        mood=@mood, summary=@summary, note_count=@note_count,
+        has_notes=@has_notes, updated_at=@updated_at
+      WHERE @updated_at > note_day.updated_at
+    `)
+
+    // alarm 병합
+    const remoteAlarms = remoteDb.prepare('SELECT * FROM alarm').all() as Array<Record<string, unknown>>
+    const localSelectAlarm = db.prepare('SELECT updated_at FROM alarm WHERE id = ?')
+    const upsertAlarm = db.prepare(`
+      INSERT INTO alarm (id, day_id, time, label, repeat, enabled, fired, created_at, updated_at)
+      VALUES (@id, @day_id, @time, @label, @repeat, @enabled, @fired, @created_at, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        day_id=@day_id, time=@time, label=@label, repeat=@repeat,
+        enabled=@enabled, fired=@fired, updated_at=@updated_at
+      WHERE @updated_at > alarm.updated_at
+    `)
+
+    db.transaction(() => {
+      for (const rd of remoteDays) {
+        const local = localSelectDay.get(rd.id) as { updated_at: number } | undefined
+        if (!local || (rd.updated_at as number) > local.updated_at) {
+          upsertDay.run(rd)
+          merged++
+        }
+      }
+      for (const ri of remoteItems) {
+        const local = localSelectItem.get(ri.id) as { updated_at: number } | undefined
+        if (!local || (ri.updated_at as number) > local.updated_at) {
+          ensureDay.run({ id: ri.day_id, updated_at: ri.updated_at })
+          upsertItem.run(ri)
+          merged++
+        }
+      }
+      for (const ra of remoteAlarms) {
+        const local = localSelectAlarm.get(ra.id) as { updated_at: number } | undefined
+        if (!local || (ra.updated_at as number) > local.updated_at) {
+          upsertAlarm.run(ra)
+          merged++
+        }
+      }
+    })()
+
+    // 첨부파일 병합 (없는 파일만 복사, 덮어쓰기 안 함)
+    const remoteAttach = join(config.onedriveSyncPath!, 'attachments')
+    const localAttach = join(config.dataPath, 'attachments')
+    if (existsSync(remoteAttach)) {
+      if (!existsSync(localAttach)) mkdirSync(localAttach, { recursive: true })
+      for (const f of readdirSync(remoteAttach)) {
+        const dest = join(localAttach, f)
+        if (!existsSync(dest)) {
+          try { copyFileSync(join(remoteAttach, f), dest) } catch {}
+        }
+      }
+    }
+
+    // note_day 캐시 재계산
+    Q.refreshAllSummaries(db)
+    console.log(`[onedrive-sync] 병합 완료: ${merged}건`)
+    return { ok: true, merged }
+  } catch (err) {
+    console.error('[onedrive-sync] 병합 실패:', err)
+    return { ok: false, merged: 0, error: String(err) }
+  } finally {
+    if (remoteDb) { try { remoteDb.close() } catch {} }
+  }
+}
+
+/** 하위 호환: importDbFromOneDrive → mergeFromOneDrive로 대체 */
+function importDbFromOneDrive(): { ok: boolean; error?: string } {
+  const result = mergeFromOneDrive()
+  return { ok: result.ok, error: result.error }
+}
+
+/** 앱 시작 시: OneDrive DB가 있으면 병합 */
+function oneDrivePullIfNewer(): void {
+  if (!config.onedriveSyncEnabled || !config.onedriveSyncPath) return
+  const remotePath = getOneDriveDbPath()
+  if (!remotePath || !existsSync(remotePath)) return
+  try {
+    console.log('[onedrive-sync] 앱 시작 → OneDrive DB 병합 시도')
+    mergeFromOneDrive()
+  } catch (err) {
+    console.error('[onedrive-sync] 시작 시 병합 실패:', err)
+  }
+}
+
+/** 데이터 변경 시 OneDrive로 내보내기 (5초 디바운스) */
+function scheduleOneDriveExport(): void {
+  if (!config.onedriveSyncEnabled || !config.onedriveSyncPath) return
+  if (onedriveSyncDebounce) clearTimeout(onedriveSyncDebounce)
+  onedriveSyncDebounce = setTimeout(() => exportDbToOneDrive(), 5000)
+}
+
+/** OneDrive 자동 동기화 시작 (5분마다 내보내기) */
+function startOneDriveSync(): void {
+  stopOneDriveSync()
+  if (!config.onedriveSyncEnabled || !config.onedriveSyncPath) return
+  onedriveSyncTimer = setInterval(() => exportDbToOneDrive(), 5 * 60 * 1000)
+}
+
+function stopOneDriveSync(): void {
+  if (onedriveSyncTimer) { clearInterval(onedriveSyncTimer); onedriveSyncTimer = null }
+  if (onedriveSyncDebounce) { clearTimeout(onedriveSyncDebounce); onedriveSyncDebounce = null }
 }
 
 /* ─────────────────────── 알람 타이머 ──────────────────────────── */
@@ -452,10 +659,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('db:upsertNoteItem', (_e, item: Q.NoteItemRow) => {
     try {
       const day = Q.upsertNoteItem(db, item) ?? null
-      // 백그라운드 동기화
       const savedItem = db.prepare('SELECT * FROM note_item WHERE id = ?').get(item.id) as Q.NoteItemRow
       if (savedItem) Sync.syncNoteItem(savedItem)
       if (day) Sync.syncNoteDay(day)
+      scheduleOneDriveExport()
       return day
     }
     catch (err) { console.error('upsertNoteItem error:', err); return null }
@@ -464,9 +671,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('db:deleteNoteItem', (_e, id: string, dayId: string) => {
     try {
       const day = Q.deleteNoteItem(db, id, dayId) ?? null
-      // 백그라운드 동기화
       Sync.syncDeleteNoteItem(id)
       if (day) Sync.syncNoteDay(day)
+      scheduleOneDriveExport()
       return day
     }
     catch (err) { console.error('deleteNoteItem error:', err); return null }
@@ -475,9 +682,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('db:reorderNoteItems', (_e, dayId: string, orderedIds: string[]) => {
     try {
       Q.reorderNoteItems(db, dayId, orderedIds)
-      // 백그라운드: 변경된 아이템들 동기화
       const items = Q.getNoteItems(db, dayId)
       items.forEach(item => Sync.syncNoteItem(item))
+      scheduleOneDriveExport()
     }
     catch (err) { console.error('reorderNoteItems error:', err) }
   })
@@ -485,9 +692,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('db:updateMood', (_e, dayId: string, mood: string | null) => {
     try {
       Q.updateMood(db, dayId, mood)
-      // 백그라운드 동기화
       const day = Q.getNoteDay(db, dayId)
       if (day) Sync.syncNoteDay(day)
+      scheduleOneDriveExport()
     }
     catch (err) { console.error('updateMood error:', err) }
   })
@@ -881,21 +1088,28 @@ function registerIpcHandlers(): void {
   }
   detectAuthBase()
 
-  async function authFetch(path: string, opts: { method?: string; body?: unknown; token?: string } = {}) {
+  async function authFetch(path: string, opts: { method?: string; body?: unknown; token?: string; timeout?: number } = {}) {
     const url = `${AUTH_BASE}/auth/v1${path}`
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'apikey': AUTH_KEY || '',
     }
     if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
-    const res = await net.fetch(url, {
-      method: opts.method || 'GET',
-      headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    })
-    const text = await res.text()
-    try { return { ok: res.ok, status: res.status, data: JSON.parse(text) } }
-    catch { return { ok: res.ok, status: res.status, data: text } }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), opts.timeout ?? 5000)
+    try {
+      const res = await net.fetch(url, {
+        method: opts.method || 'GET',
+        headers,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+        signal: controller.signal,
+      })
+      const text = await res.text()
+      try { return { ok: res.ok, status: res.status, data: JSON.parse(text) } }
+      catch { return { ok: res.ok, status: res.status, data: text } }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   // 회원가입
@@ -915,56 +1129,41 @@ function registerIpcHandlers(): void {
     }
   })
 
-  // 로그인 (기존 세션 강제 종료 포함)
+  // 로그인 (다중 기기 세션 허용)
   ipcMain.handle('auth:login', async (_e, email: string, password: string) => {
     try {
-      // 1) 로그인
       const res = await authFetch('/token?grant_type=password', {
         method: 'POST',
         body: { email, password }
       })
       if (!res.ok) return { ok: false, error: res.data?.msg || res.data?.error_description || '로그인 실패' }
 
-      const { access_token } = res.data
+      const token = res.data.access_token
+      const refresh = res.data.refresh_token
+      const user = res.data.user
 
-      // 2) 기존 세션 모두 종료 (단일 세션 정책)
-      try {
-        await authFetch('/logout?scope=global', { method: 'POST', token: access_token })
-      } catch { /* 첫 로그인이면 무시 */ }
-
-      // 3) 다시 로그인 (새 토큰 발급)
-      const res2 = await authFetch('/token?grant_type=password', {
-        method: 'POST',
-        body: { email, password }
-      })
-      if (!res2.ok) return { ok: false, error: '세션 갱신 실패' }
-
-      const token2 = res2.data.access_token
-      const refresh2 = res2.data.refresh_token
-      const user2 = res2.data.user
-
-      // 4) config에 저장
-      config.authToken = token2
-      config.authRefreshToken = refresh2
-      config.authUser = { id: user2.id, email: user2.email }
+      // config에 저장
+      config.authToken = token
+      config.authRefreshToken = refresh
+      config.authUser = { id: user.id, email: user.email }
       saveConfig(config)
 
-      // 5) 동기화에 사용자 ID + GoTrue 세션 전달
-      Sync.setUserId(user2.id)
-      await Sync.setAuthSession(token2, refresh2)
+      // 동기화에 사용자 ID + GoTrue 세션 전달
+      Sync.setUserId(user.id)
+      await Sync.setAuthSession(token, refresh)
 
-      return { ok: true, user: { id: user2.id, email: user2.email } }
+      return { ok: true, user: { id: user.id, email: user.email } }
     } catch (err) {
       return { ok: false, error: `서버 연결 실패: ${err}` }
     }
   })
 
-  // 로그아웃 (전역 — 모든 기기 세션 종료)
+  // 로그아웃 (현재 기기만 — 다른 기기 세션 유지)
   ipcMain.handle('auth:logout', async () => {
     try {
       const token = config.authToken
       if (token) {
-        await authFetch('/logout?scope=global', { method: 'POST', token })
+        await authFetch('/logout?scope=local', { method: 'POST', token })
       }
     } catch { /* 무시 */ }
     config.authToken = undefined
@@ -1062,6 +1261,46 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
+  // ── OneDrive DB 동기화 ──
+  ipcMain.handle('onedrive:getConfig', () => ({
+    enabled: config.onedriveSyncEnabled ?? false,
+    path: config.onedriveSyncPath ?? '',
+  }))
+
+  ipcMain.handle('onedrive:setPath', async () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return { ok: false }
+    const result = await dialog.showOpenDialog(win, {
+      title: 'OneDrive 동기화 폴더 선택',
+      properties: ['openDirectory'],
+      defaultPath: config.onedriveSyncPath || join(process.env.USERPROFILE || '', 'OneDrive'),
+    })
+    if (result.canceled || !result.filePaths[0]) return { ok: false }
+    config.onedriveSyncPath = result.filePaths[0]
+    config.onedriveSyncEnabled = true
+    saveConfig(config)
+    startOneDriveSync()
+    return { ok: true, path: config.onedriveSyncPath }
+  })
+
+  ipcMain.handle('onedrive:setEnabled', (_e, enabled: boolean) => {
+    config.onedriveSyncEnabled = enabled
+    saveConfig(config)
+    if (enabled) startOneDriveSync()
+    else stopOneDriveSync()
+    return { ok: true }
+  })
+
+  ipcMain.handle('onedrive:export', () => {
+    const result = exportDbToOneDrive()
+    if (result.ok) scheduleOneDriveExport() // 타이머 리셋
+    return result
+  })
+
+  ipcMain.handle('onedrive:import', () => {
+    return importDbFromOneDrive()
+  })
+
   // 윈도우 컨트롤 (frameless 타이틀바)
   ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.on('win:maximize', (e) => {
@@ -1096,8 +1335,11 @@ app.on('second-instance', () => {
 
 app.whenReady().then(() => {
   db = openDatabase()
+  oneDrivePullIfNewer()        // OneDrive DB가 더 최신이면 가져오기
+  Q.refreshAllSummaries(db)   // summary 캐시 재계산 (마크다운 태그 제거 반영)
   registerIpcHandlers()
   startAutoBackup()
+  startOneDriveSync()          // OneDrive 자동 동기화 시작
   startAlarmChecker()
   createTray()
   createWindow()
@@ -1165,7 +1407,6 @@ app.whenReady().then(() => {
       return
     }
     try {
-      syncLog('fullSync 시작...')
       const { pulled, pushed, cleaned, syncedAt, authFailed } = await Sync.fullSync(db!, config.lastSyncAt)
 
       // 인증 실패 시 저장된 credentials로 자동 재로그인 후 재시도
@@ -1201,7 +1442,9 @@ app.whenReady().then(() => {
       const filePulled = await Sync.pullAttachmentFiles(attachDir)
       const filePushed = await Sync.pushAttachmentFiles(attachDir)
 
-      syncLog(`fullSync 완료: pulled=${pulled}, pushed=${pushed}, files: pulled=${filePulled}, pushed=${filePushed}`)
+      if (pulled > 0 || pushed > 0 || filePulled > 0 || filePushed > 0) {
+        syncLog(`fullSync: pulled=${pulled}, pushed=${pushed}, files: pulled=${filePulled}, pushed=${filePushed}`)
+      }
       broadcastSyncStatus('online')
       if (pulled > 0 || pushed > 0 || cleaned > 0 || filePulled > 0) {
         BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
@@ -1248,16 +1491,36 @@ app.whenReady().then(() => {
       // 앱 시작 3초 후 첫 동기화 + Realtime 구독 시작
       setTimeout(async () => {
         await runSync()
-        // Realtime 구독: DB 변경 즉시 감지 → UI 갱신
-        Sync.startRealtime(db, () => {
-          syncLog('[Realtime] 변경 감지 → UI 갱신')
-          BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
-        })
-        syncLog('[Realtime] 실시간 구독 시작')
+        // Realtime 구독: userId가 있을 때만 시작
+        const startRealtimeIfReady = () => {
+          const uid = Sync.getUserId()
+          if (uid && db) {
+            syncLog(`[Realtime] userId=${uid} — 실시간 구독 시작`)
+            Sync.startRealtime(db, () => {
+              syncLog('[Realtime] 변경 감지 → UI 갱신')
+              BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+            })
+          } else {
+            syncLog(`[Realtime] userId 없음 — 1초 후 재시도`)
+            setTimeout(startRealtimeIfReady, 1000)
+          }
+        }
+        startRealtimeIfReady()
       }, 3000)
 
-      // 폴링: 10초 간격으로 동기화 (Realtime 보완)
-      setInterval(() => runSync(), 10 * 1000)
+      // 경량 폴링: 5초 간격 (Realtime이 메인, quickPull은 fallback)
+      setInterval(async () => {
+        if (!db || !Sync.isOnline()) return
+        try {
+          const pulled = await Sync.quickPull(db)
+          if (pulled > 0) {
+            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+          }
+        } catch {}
+      }, 5000)
+
+      // 전체 동기화: 10초 간격 (push + 삭제 감지 + 첨부파일)
+      setInterval(() => runSync(), 10000)
 
       // 1분마다 연결 상태 체크 (오프라인→온라인 전환 시 즉시 동기화 + Realtime 재연결)
       setInterval(async () => {
@@ -1266,9 +1529,11 @@ app.whenReady().then(() => {
         if (nowReachable && !wasReachable) {
           syncLog('네트워크 복구 감지 → 즉시 동기화 + Realtime 재연결')
           runSync()
-          Sync.startRealtime(db, () => {
-            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
-          })
+          Sync.reconnectRealtime()
+        } else if (nowReachable && !Sync.isRealtimeConnected()) {
+          // 서버 연결은 되는데 Realtime이 끊겨 있으면 재연결
+          syncLog('Realtime 끊김 감지 → 재연결')
+          Sync.reconnectRealtime()
         }
         wasReachable = nowReachable
       }, HEALTH_CHECK_MS)
@@ -1296,7 +1561,10 @@ app.on('before-quit', () => {
   Sync.stopRealtime()
   // 종료 시 마지막 백업 실행
   try { runAutoBackup() } catch (e) { console.error('Exit backup failed:', e) }
+  // 종료 시 OneDrive로 내보내기
+  try { exportDbToOneDrive() } catch (e) { console.error('Exit OneDrive export failed:', e) }
   stopAutoBackup()
+  stopOneDriveSync()
   stopAlarmChecker()
 })
 

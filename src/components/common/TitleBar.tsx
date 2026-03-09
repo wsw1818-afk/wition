@@ -6,15 +6,14 @@ export function TitleBar() {
 
   return (
     <div
-      className="flex items-center justify-between h-9 px-3 bg-white dark:bg-gray-900
+      className="titlebar-drag flex items-center justify-between h-9 px-3 bg-white dark:bg-gray-900
                  border-b border-gray-100 dark:border-gray-800 select-none"
-      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 tracking-wide">
         Wition
       </span>
 
-      <div className="flex gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className="titlebar-no-drag flex gap-0.5">
         {/* 검색 버튼 */}
         <button
           onClick={toggleSearch}

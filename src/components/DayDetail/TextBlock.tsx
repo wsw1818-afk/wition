@@ -13,20 +13,30 @@ interface Props {
   onTogglePin: () => void
 }
 
+function formatUploadTime(epoch: number): string {
+  const d = new Date(epoch)
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, '0')
+  const da = String(d.getDate()).padStart(2, '0')
+  const h = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `업로드: ${y}.${mo}.${da} ${h}:${mi}`
+}
+
 export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
   const [editing, setEditing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // [file:...] 태그를 분리하여 편집 영역에서 보호
+  // [file:...] 태그 감지 → 파일 첨부 블록 여부
   const fileTagMatch = item.content.match(/\[file:.+?\]/)
   const fileTag = fileTagMatch ? fileTagMatch[0] : null
-  const editableContent = fileTag ? item.content.replace(fileTag, '').trim() : item.content
-  const [text, setText] = useState(editableContent)
+  const isFileBlock = !!fileTag
+
+  const [text, setText] = useState(isFileBlock ? '' : item.content)
 
   useEffect(() => {
-    const editable = fileTag ? item.content.replace(fileTag, '').trim() : item.content
-    setText(editable)
+    if (!isFileBlock) setText(item.content)
   }, [item.content])
 
   useEffect(() => {
@@ -37,21 +47,13 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
     }
   }, [editing])
 
-  // 전체 content 복원 (편집 텍스트 + file 태그)
-  function buildContent(editText: string): string {
-    if (!fileTag) return editText
-    const trimmed = editText.trim()
-    return trimmed ? `${trimmed}\n${fileTag}` : fileTag
-  }
-
-  // 자동 저장: 1초 디바운스
+  // 자동 저장: 1초 디바운스 (일반 텍스트 블록 전용)
   const autoSave = useCallback((value: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      const full = buildContent(value)
-      if (full !== item.content) onUpdate(full)
+      if (value !== item.content) onUpdate(value)
     }, 1000)
-  }, [item.content, onUpdate, fileTag])
+  }, [item.content, onUpdate])
 
   // 컴포넌트 언마운트 시 타이머 정리
   useEffect(() => {
@@ -61,12 +63,8 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
   function save() {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     setEditing(false)
-    const full = buildContent(text)
-    if (full !== item.content) onUpdate(full)
-    else {
-      const editable = fileTag ? item.content.replace(fileTag, '').trim() : item.content
-      setText(editable)
-    }
+    if (text !== item.content) onUpdate(text)
+    else setText(item.content)
   }
 
   function autoResize(el: HTMLTextAreaElement) {
@@ -81,7 +79,15 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
         ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
       {/* 본문 */}
-      {editing ? (
+      {isFileBlock ? (
+        /* 파일 첨부 블록: 편집 불가, 업로드 시간 표시 */
+        <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed">
+          <InlineRenderer text={item.content} />
+          <div className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 select-none">
+            {formatUploadTime(item.created_at)}
+          </div>
+        </div>
+      ) : editing ? (
         <div>
           <textarea
             ref={ref}
@@ -93,11 +99,6 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
                        outline-none leading-relaxed"
             rows={1}
           />
-          {fileTag && (
-            <div className="mt-1 pointer-events-auto">
-              <InlineRenderer text={fileTag} />
-            </div>
-          )}
         </div>
       ) : (
         <div

@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 타이틀바 드래그 영역 (Electron frameless window) */
+.titlebar-drag { -webkit-app-region: drag; }
+.titlebar-no-drag { -webkit-app-region: no-drag; }
+
 @layer base {
   html, body, #root {
     @apply h-full w-full;

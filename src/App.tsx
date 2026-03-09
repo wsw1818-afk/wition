@@ -62,6 +62,8 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
   const [syncStatus, setSyncStatus] = useState<'offline' | 'online' | 'syncing' | 'error'>('offline')
+  const [onedrivePath, setOnedrivePath] = useState('')
+  const [onedriveEnabled, setOnedriveEnabled] = useState(false)
 
   const selectDate = useCalendarStore((s) => s.selectDate)
 
@@ -129,6 +131,10 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
     window.api.getCalendarWidth().then((w) => {
       setCalendarWidth(w)
       calendarWidthRef.current = w
+    })
+    window.api.onedriveGetConfig().then((cfg) => {
+      setOnedriveEnabled(cfg.enabled)
+      setOnedrivePath(cfg.path)
     })
   }, [])
 
@@ -380,6 +386,57 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                       setSyncStatus(syncStatus === 'online' ? 'online' : 'offline')
                     }
                   }}>지금 동기화</SettingsBtn>
+                </div>
+
+                {/* OneDrive DB 동기화 */}
+                <div className="space-y-1 pt-1 border-t border-gray-100 dark:border-gray-800">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={onedriveEnabled}
+                      onChange={async (e) => {
+                        const enabled = e.target.checked
+                        if (enabled && !onedrivePath) {
+                          const res = await window.api.onedriveSetPath()
+                          if (res.ok && res.path) {
+                            setOnedrivePath(res.path)
+                            setOnedriveEnabled(true)
+                          }
+                        } else {
+                          await window.api.onedriveSetEnabled(enabled)
+                          setOnedriveEnabled(enabled)
+                        }
+                      }}
+                      className="w-3.5 h-3.5 accent-accent-500"
+                    />
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">OneDrive DB 동기화</span>
+                  </label>
+                  {onedrivePath && (
+                    <p className="text-[11px] text-gray-600 dark:text-gray-300 break-all leading-relaxed">{onedrivePath}</p>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    <SettingsBtn onClick={async () => {
+                      const res = await window.api.onedriveSetPath()
+                      if (res.ok && res.path) {
+                        setOnedrivePath(res.path)
+                        setOnedriveEnabled(true)
+                      }
+                    }}>폴더 변경</SettingsBtn>
+                    <SettingsBtn onClick={async () => {
+                      const res = await window.api.onedriveExport()
+                      alert(res.ok ? 'OneDrive로 내보내기 완료!' : `실패: ${res.error}`)
+                    }}>지금 내보내기</SettingsBtn>
+                    <SettingsBtn onClick={async () => {
+                      if (!confirm('OneDrive의 DB로 현재 데이터를 덮어씁니다. 계속하시겠습니까?')) return
+                      const res = await window.api.onedriveImport()
+                      if (res.ok) {
+                        await loadMonth(currentMonth)
+                        alert('OneDrive에서 가져오기 완료!')
+                      } else {
+                        alert(`실패: ${res.error}`)
+                      }
+                    }}>가져오기</SettingsBtn>
+                  </div>
                 </div>
 
                 {/* 계정 */}

@@ -86,8 +86,8 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
       {/* 드래그 가능한 타이틀바 영역 */}
-      <div className="h-8 flex-shrink-0 flex items-center justify-end px-2" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
-        <div className="flex gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className="titlebar-drag h-8 flex-shrink-0 flex items-center justify-end px-2">
+        <div className="titlebar-no-drag flex gap-1">
           <button onClick={() => window.api.minimize()} className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded text-xs">─</button>
           <button onClick={() => window.api.close()} className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded text-xs">✕</button>
         </div>
@@ -191,11 +191,22 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
             </button>
           </div>
 
+          {/* 오프라인 모드 */}
+          <div className="mt-4">
+            <button
+              onClick={() => onLogin({ id: 'offline', email: 'offline' })}
+              className="w-full py-2 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors"
+            >
+              오프라인 모드로 시작 (동기화 없이 로컬만 사용)
+            </button>
+          </div>
+
           {/* 안내 */}
-          <div className="mt-8 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-800">
+          <div className="mt-4 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-800">
             <p className="text-[11px] text-gray-400 dark:text-gray-500 leading-relaxed text-center">
-              로그인하면 다른 기기의 세션은 자동으로 종료됩니다.<br/>
-              한 번에 하나의 기기에서만 사용할 수 있습니다.
+              PC와 모바일에서 동시에 사용할 수 있습니다.<br/>
+              데이터는 자동으로 동기화됩니다.
             </p>
           </div>
         </div>

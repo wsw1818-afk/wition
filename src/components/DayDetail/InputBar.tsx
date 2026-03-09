@@ -50,7 +50,11 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
         }
         setShowSlash(true)
       }
-    } else {
+    } else if (showSlash && text === '') {
+      // handleSlashSelect에서 setText('')이 호출된 경우에만 닫기
+      // 사용자가 직접 /를 지운 경우도 여기에 해당
+      setShowSlash(false)
+    } else if (!text.startsWith('/')) {
       setShowSlash(false)
     }
   }, [text])

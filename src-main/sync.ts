@@ -10,9 +10,12 @@ import type { NoteDayRow, NoteItemRow, AlarmRow } from './db/queries'
 import { getTombstones, clearTombstones, isTombstoned } from './db/queries'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join, extname } from 'path'
+import WebSocket from 'ws'
 
 let supabase: SupabaseClient | null = null
+let supabaseRealtime: SupabaseClient | null = null  // Realtime 전용 (service_role)
 let syncing = false
+let quickPulling = false
 let reachable = false
 let currentUserId: string | null = null
 let realtimeChannel: ReturnType<SupabaseClient['channel']> | null = null
@@ -59,6 +62,9 @@ export async function clearAuthSession(): Promise<void> {
   await supabase.auth.signOut()
 }
 
+// service_role key (self-hosted용 — Realtime RLS 우회)
+const SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU'
+
 export async function initSync(): Promise<boolean> {
   const urls = [
     process.env.VITE_SUPABASE_URL,
@@ -77,6 +83,18 @@ export async function initSync(): Promise<boolean> {
         supabase = createClient(url, key, {
           realtime: {
             params: { apikey: key },
+            heartbeatIntervalMs: 15000,
+            reconnectAfterMs: (tries: number) => Math.min(1000 * Math.pow(2, tries), 30000),
+          },
+        })
+        // Realtime 전용 클라이언트 (service_role — RLS 우회하여 모든 이벤트 수신)
+        supabaseRealtime = createClient(url, SERVICE_ROLE_KEY, {
+          realtime: {
+            params: { apikey: SERVICE_ROLE_KEY },
+            heartbeatIntervalMs: 15000,
+            reconnectAfterMs: (tries: number) => Math.min(1000 * Math.pow(2, tries), 30000),
+            timeout: 30000,
+            transport: WebSocket as any,
           },
         })
         console.log('[Sync] Supabase 연결:', url)
@@ -88,6 +106,17 @@ export async function initSync(): Promise<boolean> {
   supabase = createClient(urls[0], key, {
     realtime: {
       params: { apikey: key },
+      heartbeatIntervalMs: 15000,
+      reconnectAfterMs: (tries: number) => Math.min(1000 * Math.pow(2, tries), 30000),
+    },
+  })
+  supabaseRealtime = createClient(urls[0], SERVICE_ROLE_KEY, {
+    realtime: {
+      params: { apikey: SERVICE_ROLE_KEY },
+      heartbeatIntervalMs: 15000,
+      reconnectAfterMs: (tries: number) => Math.min(1000 * Math.pow(2, tries), 30000),
+      timeout: 30000,
+      transport: WebSocket as any,
     },
   })
   console.log('[Sync] 서버 응답 없음, 기본값 사용:', urls[0])
@@ -108,16 +137,56 @@ export function isSyncing(): boolean {
 
 /* ────────────── Supabase Realtime (실시간 동기화) ────────────── */
 
+let realtimeRetryCount = 0
+let realtimeRetryTimer: ReturnType<typeof setTimeout> | null = null
+let realtimeSubscribed = false
+
+/** Realtime 구독이 활성 상태인지 확인 */
+export function isRealtimeConnected(): boolean {
+  return realtimeSubscribed && realtimeChannel !== null
+}
+
 /** Realtime 구독 시작 — DB 변경 시 즉시 로컬 반영 + UI 갱신 콜백 호출 */
 export function startRealtime(db: Database.Database, onChange: () => void): void {
-  console.log('[Realtime] startRealtime 호출 — supabase:', !!supabase, 'userId:', currentUserId)
-  if (!supabase || !currentUserId) return
+  slog('[Realtime] startRealtime 호출 — supabaseRealtime:' + !!supabaseRealtime + ' userId:' + currentUserId)
+  if (!supabaseRealtime || !currentUserId) return
+
+  // 이미 구독 중이면 중복 시작 방지
+  if (realtimeSubscribed && realtimeChannel) {
+    slog('[Realtime] 이미 구독 중 — 스킵')
+    return
+  }
+
   stopRealtime()
 
   realtimeDb = db
   onRealtimeChange = onChange
+  realtimeRetryCount = 0
 
-  realtimeChannel = supabase
+  connectRealtime()
+}
+
+/** 실제 Realtime 채널 연결 (내부용) */
+function connectRealtime(): void {
+  if (!supabaseRealtime || !currentUserId || !realtimeDb) return
+
+  // 이전 retry 타이머 취소
+  if (realtimeRetryTimer) {
+    clearTimeout(realtimeRetryTimer)
+    realtimeRetryTimer = null
+  }
+
+  // 기존 채널 정리
+  if (realtimeChannel) {
+    try { supabaseRealtime.removeChannel(realtimeChannel) } catch {}
+    realtimeChannel = null
+  }
+  realtimeSubscribed = false
+
+  // @ts-ignore — 내부 디버깅용
+  const wsUrl = supabaseRealtime?.['realtimeUrl'] || supabaseRealtime?.['realtime']?.['endPoint'] || 'unknown'
+  slog(`[Realtime] 채널 생성 중... (endpoint: ${wsUrl})`)
+  realtimeChannel = supabaseRealtime
     .channel('sync-realtime')
     .on(
       'postgres_changes',
@@ -135,22 +204,54 @@ export function startRealtime(db: Database.Database, onChange: () => void): void
       (payload) => handleRealtimeEvent('alarm', payload)
     )
     .subscribe((status, err) => {
-      console.log('[Realtime] 구독 상태:', status, err ? `에러: ${err.message}` : '')
-      if (status === 'CHANNEL_ERROR') {
-        console.error('[Realtime] 채널 에러 — 10초 후 재시도')
-        setTimeout(() => {
-          if (realtimeDb && onRealtimeChange) startRealtime(realtimeDb, onRealtimeChange)
+      if (status === 'SUBSCRIBED') {
+        realtimeSubscribed = true
+        realtimeRetryCount = 0
+        slog('[Realtime] ✅ 구독 성공 — 실시간 동기화 활성')
+      } else if (status === 'CHANNEL_ERROR') {
+        realtimeSubscribed = false
+        realtimeRetryCount++
+        // 지수 백오프: 5s, 10s, 20s, 40s, 최대 60s
+        const delay = Math.min(5000 * Math.pow(2, realtimeRetryCount - 1), 60000)
+        slog(`[Realtime] ❌ 채널 에러 (${realtimeRetryCount}회) — ${delay / 1000}초 후 재시도` + (err ? ` 에러: ${err.message}` : ''))
+        realtimeRetryTimer = setTimeout(() => {
+          if (realtimeDb && onRealtimeChange) connectRealtime()
+        }, delay)
+      } else if (status === 'TIMED_OUT') {
+        realtimeSubscribed = false
+        slog('[Realtime] ⏰ 타임아웃 — 10초 후 재연결')
+        realtimeRetryTimer = setTimeout(() => {
+          if (realtimeDb && onRealtimeChange) connectRealtime()
         }, 10000)
+      } else if (status === 'CLOSED') {
+        realtimeSubscribed = false
+        slog('[Realtime] 🔒 채널 닫힘')
+      } else {
+        slog('[Realtime] 상태: ' + status)
       }
     })
 }
 
+/** Realtime 강제 재연결 (외부에서 호출 — 네트워크 복구 시) */
+export function reconnectRealtime(): void {
+  if (!realtimeDb || !onRealtimeChange) return
+  slog('[Realtime] 강제 재연결 요청')
+  realtimeSubscribed = false
+  realtimeRetryCount = 0
+  connectRealtime()
+}
+
 /** Realtime 구독 중지 */
 export function stopRealtime(): void {
-  if (realtimeChannel && supabase) {
-    supabase.removeChannel(realtimeChannel)
+  if (realtimeRetryTimer) {
+    clearTimeout(realtimeRetryTimer)
+    realtimeRetryTimer = null
+  }
+  realtimeSubscribed = false
+  if (realtimeChannel && supabaseRealtime) {
+    try { supabaseRealtime.removeChannel(realtimeChannel) } catch {}
     realtimeChannel = null
-    console.log('[Realtime] 구독 해제')
+    slog('[Realtime] 구독 해제')
   }
 }
 
@@ -165,9 +266,9 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
       const id = oldRow.id as string
       if (!id) return
       realtimeDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
-      // note_item 삭제 시 day 카운트 갱신
+      // note_item 삭제 시 day 카운트 갱신 (preserveUpdatedAt: push 핑퐁 방지)
       if (table === 'note_item' && oldRow.day_id) {
-        updateDayCount(realtimeDb, oldRow.day_id as string)
+        updateDayCount(realtimeDb, oldRow.day_id as string, true)
       }
       console.log(`[Realtime] ${table} 삭제: ${id}`)
     } else {
@@ -213,7 +314,7 @@ function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<s
         order_index=@order_index, updated_at=@updated_at
       WHERE @updated_at > note_item.updated_at
     `).run(row)
-    updateDayCount(db, row.day_id as string)
+    updateDayCount(db, row.day_id as string, true)
   } else if (table === 'alarm') {
     db.prepare(`
       INSERT INTO alarm (id, day_id, time, label, repeat, enabled, fired, created_at, updated_at)
@@ -227,15 +328,19 @@ function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<s
 }
 
 /** note_item 변경 시 해당 day의 note_count/has_notes 갱신 */
-function updateDayCount(db: Database.Database, dayId: string): void {
+function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt = false): void {
   const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(dayId) as { cnt: number }
   if (row.cnt === 0) {
     const day = db.prepare('SELECT mood FROM note_day WHERE id = ?').get(dayId) as { mood: string | null } | undefined
     if (!day?.mood) {
       db.prepare('DELETE FROM note_day WHERE id = ?').run(dayId)
+    } else if (preserveUpdatedAt) {
+      db.prepare('UPDATE note_day SET note_count = 0, has_notes = 0, summary = NULL WHERE id = ?').run(dayId)
     } else {
       db.prepare('UPDATE note_day SET note_count = 0, has_notes = 0, summary = NULL, updated_at = ? WHERE id = ?').run(Date.now(), dayId)
     }
+  } else if (preserveUpdatedAt) {
+    db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1 WHERE id = ?').run(row.cnt, dayId)
   } else {
     db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, updated_at = ? WHERE id = ?').run(row.cnt, Date.now(), dayId)
   }
@@ -270,6 +375,73 @@ export async function checkConnection(): Promise<boolean> {
   return reachable
 }
 
+/* ────────────── 경량 폴링 (quickPull) — Realtime 보완 ────────────── */
+
+let lastQuickPullAt = 0
+
+/**
+ * quickPull — fullSync 대신 최근 변경만 빠르게 가져오는 경량 동기화
+ * 인증 체크 생략, updated_at 기준으로 최근 변경만 조회
+ * 반환: pulled 건수 (UI 갱신 필요 여부 판단용)
+ */
+export async function quickPull(db: Database.Database): Promise<number> {
+  if (!supabase || quickPulling || !currentUserId) return 0
+  quickPulling = true
+  try {
+    const since = lastQuickPullAt || (Date.now() - 10000) // 최초는 10초 전부터
+    const now = Date.now()
+
+    // note_item 변경분 조회 (추가/수정 감지 — 삭제는 fullSync 3초 간격에서 처리)
+    const { data: items, error: e2 } = await supabase.from('note_item').select('*').eq('user_id', currentUserId).gt('updated_at', since)
+
+    if (e2) return 0
+
+    const remoteItems = (items ?? []) as NoteItemRow[]
+
+    if (remoteItems.length === 0) {
+      lastQuickPullAt = now
+      return 0
+    }
+
+    let count = 0
+    const tombstones = getTombstones(db)
+    const tombstoneSet = new Set(tombstones.map(t => `${t.table_name}:${t.item_id}`))
+
+    db.transaction(() => {
+      for (const ri of remoteItems) {
+        if (tombstoneSet.has(`note_item:${ri.id}`)) continue
+        db.prepare(`INSERT OR IGNORE INTO note_day (id, note_count, has_notes, updated_at) VALUES (@id, 0, 0, @updated_at)`)
+          .run({ id: ri.day_id, updated_at: ri.updated_at })
+        const info = db.prepare(`
+          INSERT INTO note_item (id, day_id, type, content, tags, pinned, order_index, created_at, updated_at)
+          VALUES (@id, @day_id, @type, @content, @tags, @pinned, @order_index, @created_at, @updated_at)
+          ON CONFLICT(id) DO UPDATE SET
+            type=@type, content=@content, tags=@tags, pinned=@pinned,
+            order_index=@order_index, updated_at=@updated_at
+          WHERE @updated_at > note_item.updated_at
+        `).run(ri)
+        if (info.changes > 0) {
+          updateDayCount(db, ri.day_id as string, true)
+          count++
+        }
+      }
+    })()
+
+    if (count > 0) slog(`[quickPull] ${count}건 동기화 (items=${remoteItems.length})`)
+    lastQuickPullAt = now
+    return count
+  } catch (err) {
+    return 0
+  } finally {
+    quickPulling = false
+  }
+}
+
+/* ────────────── 인증 캐싱 ────────────── */
+
+let lastAuthCheckAt = 0
+const AUTH_CHECK_INTERVAL = 5 * 60 * 1000  // 5분마다만 서버 인증 확인
+
 /**
  * 증분 동기화 (사용자별)
  */
@@ -285,27 +457,36 @@ export async function fullSync(
   const start = Date.now()
   const syncedAt = Date.now()
   try {
-    // JWT 세션 확인 — getUser()로 서버 측 검증 (getSession()은 로컬 캐시만 확인하므로 만료 토큰을 감지 못함)
+    // JWT 세션 확인 — 5분 간격으로만 서버 검증 (매번 하면 느림)
     let authenticated = false
-    try {
-      const { data: { user }, error: userErr } = await supabase.auth.getUser()
-      if (userErr || !user) {
-        slog(`[Sync] getUser 실패 (${userErr?.message || '세션 없음'}) → refresh 시도`)
-        const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession()
-        if (refreshData?.session) {
-          slog('[Sync] 세션 갱신 성공')
-          authenticated = true
+    const now = Date.now()
+    if (now - lastAuthCheckAt < AUTH_CHECK_INTERVAL) {
+      // 캐시된 인증 사용
+      authenticated = true
+    } else {
+      try {
+        const { data: { user }, error: userErr } = await supabase.auth.getUser()
+        if (userErr || !user) {
+          slog(`[Sync] getUser 실패 (${userErr?.message || '세션 없음'}) → refresh 시도`)
+          const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession()
+          if (refreshData?.session) {
+            slog('[Sync] 세션 갱신 성공')
+            authenticated = true
+            lastAuthCheckAt = now
+          } else {
+            slog(`[Sync] 세션 갱신 실패 (${refreshErr?.message}) → sync 중단 (authFailed=true)`)
+            lastAuthCheckAt = 0
+            return { pulled: 0, pushed: 0, cleaned: 0, syncedAt: lastSyncAt ?? 0, authFailed: true }
+          }
         } else {
-          slog(`[Sync] 세션 갱신 실패 (${refreshErr?.message}) → sync 중단 (authFailed=true)`)
-          return { pulled: 0, pushed: 0, cleaned: 0, syncedAt: lastSyncAt ?? 0, authFailed: true }
+          authenticated = true
+          lastAuthCheckAt = now
         }
-      } else {
-        slog(`[Sync] 인증 확인: ${user.email}`)
-        authenticated = true
+      } catch (sessErr) {
+        slog(`[Sync] 세션 확인 실패 → sync 중단: ${sessErr}`)
+        lastAuthCheckAt = 0
+        return { pulled: 0, pushed: 0, cleaned: 0, syncedAt: lastSyncAt ?? 0, authFailed: true }
       }
-    } catch (sessErr) {
-      slog(`[Sync] 세션 확인 실패 → sync 중단: ${sessErr}`)
-      return { pulled: 0, pushed: 0, cleaned: 0, syncedAt: lastSyncAt ?? 0, authFailed: true }
     }
 
     // 0) tombstone 처리 먼저: 로컬에서 삭제된 항목을 원격에서 삭제
@@ -335,12 +516,13 @@ export async function fullSync(
       }
     }
 
-    const pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
+    let pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
     if (pulled > 0) slog(`[Sync] pulled ${pulled}건`)
 
     // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제
+    // 단, 서버 데이터가 충분히 있을 때만 실행 (0건이면 인증/네트워크 문제 가능)
     let cleaned = 0
-    if (authenticated) {
+    if (authenticated && remoteItems.length > 0) {
       cleaned = cleanDeletedFromRemote(db, remoteDays, remoteItems, lastSyncAt)
     }
 
@@ -356,6 +538,8 @@ export async function fullSync(
     const pushed = await pushChanges(db, lastSyncAt)
 
     slog(`[Sync] 완료: pulled=${pulled}, pushed=${pushed}, cleaned=${cleaned}, tombstones=${tombstoneCount} (${Date.now() - start}ms)`)
+    // fullSync 완료 후 quickPull 기준점 갱신 (push가 변경한 데이터를 다시 pull하지 않도록)
+    lastQuickPullAt = Date.now()
     return { pulled, pushed, cleaned, syncedAt }
   } catch (err) {
     console.error('[Sync] 동기화 실패:', err)
@@ -432,25 +616,38 @@ function applyPull(
       if (!local || rd.updated_at > local.updated_at) {
         upsertDay.run(rd)
         count++
-        slog(`[Sync:pull] day ${rd.id} remote_at=${rd.updated_at} local_at=${local?.updated_at ?? 'N/A'}`)
       }
     }
+    let itemSkippedByTombstone = 0, itemSkippedByLocal = 0, itemNew = 0, itemUpdated = 0
     for (const ri of remoteItems) {
       const delAtItem = tombstoneMap.get(`note_item:${ri.id}`)
       if (delAtItem !== undefined) {
         if (ri.updated_at > delAtItem) {
           deleteTombstone.run('note_item', ri.id)
         } else {
+          itemSkippedByTombstone++
           continue
         }
       }
       const local = selectItem.get(ri.id) as { updated_at: number } | undefined
-      if (!local || ri.updated_at > local.updated_at) {
+      if (!local) {
         ensureDay.run({ id: ri.day_id, updated_at: ri.updated_at })
         upsertItem.run(ri)
         affectedDayIds.add(ri.day_id as string)
         count++
+        itemNew++
+      } else if (ri.updated_at > local.updated_at) {
+        ensureDay.run({ id: ri.day_id, updated_at: ri.updated_at })
+        upsertItem.run(ri)
+        affectedDayIds.add(ri.day_id as string)
+        count++
+        itemUpdated++
+      } else {
+        itemSkippedByLocal++
       }
+    }
+    if (itemNew > 0 || itemUpdated > 0 || itemSkippedByTombstone > 0) {
+      slog(`[Sync] items: new=${itemNew}, updated=${itemUpdated}, skippedLocal=${itemSkippedByLocal}, skippedTombstone=${itemSkippedByTombstone}`)
     }
     for (const ra of remoteAlarms) {
       const delAtAlarm = tombstoneMap.get(`alarm:${ra.id}`)
@@ -468,9 +665,9 @@ function applyPull(
       }
     }
 
-    // note_item이 변경된 day들의 note_count 재계산
+    // note_item이 변경된 day들의 note_count 재계산 (preserveUpdatedAt: push 핑퐁 방지)
     for (const dayId of affectedDayIds) {
-      updateDayCount(db, dayId)
+      updateDayCount(db, dayId, true)
     }
   })()
 
@@ -512,17 +709,7 @@ function cleanDeletedFromRemote(
     if (deleted > 0) {
       slog(`[Sync] 원격에서 삭제된 로컬 아이템 ${deleted}개 정리`)
       for (const dayId of affectedDayIds) {
-        const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(dayId) as { cnt: number }
-        if (row.cnt === 0) {
-          const day = db.prepare('SELECT mood FROM note_day WHERE id = ?').get(dayId) as { mood: string | null } | undefined
-          if (!day?.mood && !remoteDayIds.has(dayId)) {
-            db.prepare('DELETE FROM note_day WHERE id = ?').run(dayId)
-          } else {
-            db.prepare('UPDATE note_day SET note_count = 0, has_notes = 0, summary = NULL, updated_at = ? WHERE id = ?').run(Date.now(), dayId)
-          }
-        } else {
-          db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, updated_at = ? WHERE id = ?').run(row.cnt, Date.now(), dayId)
-        }
+        updateDayCount(db, dayId, true)
       }
     }
     return deleted
@@ -650,7 +837,7 @@ async function pushChanges(
   const tombstones = getTombstones(db)
   const tombstoneSet = new Set(tombstones.map(t => `${t.table_name}:${t.item_id}`))
 
-  // 3) 원격에 이미 있고 로컬이 더 새로운 항목만 업데이트 (핵심: 원격에 없는 건 push 안 함)
+  // 3) 원격에 없거나 로컬이 더 새로운 항목 push
   const allDays = (db.prepare('SELECT * FROM note_day').all() as NoteDayRow[])
     .filter(d => !tombstoneSet.has(`note_day:${d.id}`))
   const allItems = (db.prepare('SELECT * FROM note_item').all() as NoteItemRow[])
@@ -658,12 +845,12 @@ async function pushChanges(
   const allAlarms = (db.prepare('SELECT * FROM alarm').all() as AlarmRow[])
     .filter(a => !tombstoneSet.has(`alarm:${a.id}`))
 
-  // 원격에 존재 + 로컬이 더 새로운 것만 필터
+  // 원격에 없거나(새 아이템) 로컬이 더 새로운 것 필터
   const daysToUpdate = allDays
     .filter(ld => {
       const ts = remoteDayMap.get(ld.id)
-      if (ts !== undefined && ld.updated_at > ts) {
-        slog(`[Sync:push] day ${ld.id} local_at=${ld.updated_at} remote_at=${ts}`)
+      if (ts === undefined || ld.updated_at > ts) {
+        slog(`[Sync:push] day ${ld.id} local_at=${ld.updated_at} remote_at=${ts ?? 'NEW'}`)
         return true
       }
       return false
@@ -672,15 +859,15 @@ async function pushChanges(
   const itemsToUpdate = allItems
     .filter(li => {
       const ts = remoteItemMap.get(li.id)
-      if (ts !== undefined && li.updated_at > ts) {
-        slog(`[Sync:push] item ${li.id} local_at=${li.updated_at} remote_at=${ts}`)
+      if (ts === undefined || li.updated_at > ts) {
+        slog(`[Sync:push] item ${li.id} local_at=${li.updated_at} remote_at=${ts ?? 'NEW'}`)
         return true
       }
       return false
     })
     .map(i => ({ ...i, user_id: currentUserId }))
   const alarmsToUpdate = allAlarms
-    .filter(la => { const ts = remoteAlarmMap.get(la.id); return ts !== undefined && la.updated_at > ts })
+    .filter(la => { const ts = remoteAlarmMap.get(la.id); return ts === undefined || la.updated_at > ts })
     .map(a => ({ ...a, user_id: currentUserId }))
 
   // note_day push

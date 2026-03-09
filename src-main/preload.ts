@@ -87,6 +87,13 @@ const api = {
   authGetCredentials:  () => ipcRenderer.invoke('auth:getCredentials') as Promise<{ ok: boolean; email?: string; password?: string }>,
   authClearCredentials:() => ipcRenderer.invoke('auth:clearCredentials') as Promise<{ ok: boolean }>,
 
+  // ── OneDrive DB 동기화 ──
+  onedriveGetConfig: () => ipcRenderer.invoke('onedrive:getConfig') as Promise<{ enabled: boolean; path: string }>,
+  onedriveSetPath:   () => ipcRenderer.invoke('onedrive:setPath') as Promise<{ ok: boolean; path?: string }>,
+  onedriveSetEnabled:(enabled: boolean) => ipcRenderer.invoke('onedrive:setEnabled', enabled) as Promise<{ ok: boolean }>,
+  onedriveExport:    () => ipcRenderer.invoke('onedrive:export') as Promise<{ ok: boolean; error?: string }>,
+  onedriveImport:    () => ipcRenderer.invoke('onedrive:import') as Promise<{ ok: boolean; error?: string }>,
+
   // ── 윈도우 컨트롤 (frameless) ──
   minimize: () => ipcRenderer.send('win:minimize'),
   maximize: () => ipcRenderer.send('win:maximize'),
