@@ -24,12 +24,26 @@ export interface NoteItemRow {
 
 /* ────────────────────────────── READ ────────────────────────────── */
 
-/** 월 단위 NoteDay 조회 (달력 dot 표시용) */
+/** 월 단위 NoteDay 조회 (달력 dot 표시용) — 실제 note_item 기준으로 count 보정 */
 export function getNoteDaysByMonth(db: Database.Database, yearMonth: string): NoteDayRow[] {
   const pattern = `${yearMonth}-%`
   return db
-    .prepare('SELECT * FROM note_day WHERE id LIKE ? ORDER BY id')
-    .all(pattern) as NoteDayRow[]
+    .prepare(`
+      SELECT d.*,
+        COALESCE(c.cnt, 0) as actual_count
+      FROM note_day d
+      LEFT JOIN (
+        SELECT day_id, COUNT(*) as cnt FROM note_item GROUP BY day_id
+      ) c ON c.day_id = d.id
+      WHERE d.id LIKE ?
+      ORDER BY d.id
+    `)
+    .all(pattern)
+    .map((row: any) => ({
+      ...row,
+      note_count: row.actual_count,
+      has_notes: row.actual_count > 0 ? 1 : 0
+    })) as NoteDayRow[]
 }
 
 /** 단일 NoteDay 조회 */

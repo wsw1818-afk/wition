@@ -7,7 +7,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type Database from 'better-sqlite3'
 import type { NoteDayRow, NoteItemRow, AlarmRow } from './db/queries'
-import { getTombstones, clearTombstones, isTombstoned } from './db/queries'
+import { getTombstones, clearTombstones, isTombstoned, addTombstone } from './db/queries'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join, extname } from 'path'
 import WebSocket from 'ws'
@@ -268,11 +268,13 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
         return
       }
       const info = realtimeDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
+      // tombstone 기록: pushChanges에서 삭제된 아이템을 재업로드하는 것 방지
+      addTombstone(realtimeDb, table, id)
       // note_item 삭제 시 day 카운트 갱신 (preserveUpdatedAt: push 핑퐁 방지)
       if (table === 'note_item' && oldRow.day_id) {
         updateDayCount(realtimeDb, oldRow.day_id as string, true)
       }
-      slog(`[Realtime] ${table} 삭제: ${id} (changes=${info.changes})`)
+      slog(`[Realtime] ${table} 삭제+tombstone: ${id} (changes=${info.changes})`)
     } else {
       // INSERT or UPDATE
       const row = payload.new as Record<string, unknown>
@@ -518,15 +520,15 @@ export async function fullSync(
       }
     }
 
-    let pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
-    if (pulled > 0) slog(`[Sync] pulled ${pulled}건`)
-
-    // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제
+    // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제 (pull 전에 실행하여 UI 깜빡임 방지)
     // 단, 서버 데이터가 충분히 있을 때만 실행 (0건이면 인증/네트워크 문제 가능)
     let cleaned = 0
     if (authenticated && remoteItems.length > 0) {
       cleaned = cleanDeletedFromRemote(db, remoteDays, remoteItems, lastSyncAt)
     }
+
+    let pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
+    if (pulled > 0) slog(`[Sync] pulled ${pulled}건`)
 
     // 서버 note_day 캐시 정합성 수정 (모바일이 item 삭제 시 day count를 안 바꾸는 문제 보정)
     if (authenticated) {
@@ -537,7 +539,8 @@ export async function fullSync(
     recalcAllDayCounts(db)
 
     // Push: 로컬 새 데이터를 원격에 반영 (cleanDeleted 후 실행하여 삭제된 아이템 재업로드 방지)
-    const pushed = await pushChanges(db, lastSyncAt)
+    // pull에서 이미 조회한 remote 데이터를 재사용 → 서버 재조회 제거 (성능 개선)
+    const pushed = await pushChanges(db, lastSyncAt, remoteDays, remoteItems, remoteAlarms)
 
     slog(`[Sync] 완료: pulled=${pulled}, pushed=${pushed}, cleaned=${cleaned}, tombstones=${tombstoneCount} (${Date.now() - start}ms)`)
     // fullSync 완료 후 quickPull 기준점 갱신 (push가 변경한 데이터를 다시 pull하지 않도록)
@@ -687,18 +690,19 @@ function cleanDeletedFromRemote(
     const remoteItemIds = new Set(remoteItems.map(i => i.id))
     const remoteDayIds = new Set(remoteDays.map(d => d.id))
 
-    // 보호 대상: lastSyncAt 이후에 로컬에서 새로 생성된 아이템만 (아직 push 안 됐을 수 있음)
-    // lastSyncAt 이전에 생성됐는데 서버에 없으면 → 서버에서 삭제된 것 → 로컬에서도 삭제
+    // 보호 대상: lastSyncAt 이후에 로컬에서 생성/변경된 아이템 (아직 push 안 됐을 수 있음)
+    // OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각
+    // → created_at 또는 updated_at이 lastSyncAt 이후면 보호
     const protectAfter = lastSyncAt ?? 0
-    const localItems = db.prepare('SELECT id, day_id, created_at FROM note_item').all() as Array<{ id: string; day_id: string; created_at: number }>
+    const localItems = db.prepare('SELECT id, day_id, created_at, updated_at FROM note_item').all() as Array<{ id: string; day_id: string; created_at: number; updated_at: number }>
     let deleted = 0
     const affectedDayIds = new Set<string>()
 
     db.transaction(() => {
       for (const li of localItems) {
         if (!remoteItemIds.has(li.id)) {
-          if (li.created_at > protectAfter) {
-            slog(`[Sync] lastSyncAt 이후 생성 아이템 보호 (삭제 스킵): ${li.id}`)
+          if (li.created_at > protectAfter || li.updated_at > protectAfter) {
+            slog(`[Sync] lastSyncAt 이후 생성/변경 아이템 보호 (삭제 스킵): ${li.id} created=${li.created_at} updated=${li.updated_at}`)
             continue
           }
           db.prepare('DELETE FROM note_item WHERE id = ?').run(li.id)
@@ -721,7 +725,7 @@ function cleanDeletedFromRemote(
   }
 }
 
-/** 서버 note_day의 note_count가 실제 note_item과 불일치할 때 서버를 수정 */
+/** 서버 note_day의 note_count가 실제 note_item과 불일치할 때 서버를 수정 (배치 처리) */
 async function fixRemoteDayCounts(remoteDays: NoteDayRow[], remoteItems: NoteItemRow[]): Promise<void> {
   if (!supabase || !currentUserId) return
   try {
@@ -731,22 +735,34 @@ async function fixRemoteDayCounts(remoteDays: NoteDayRow[], remoteItems: NoteIte
       countByDay.set(item.day_id as string, (countByDay.get(item.day_id as string) || 0) + 1)
     }
 
+    const toDelete: string[] = []
+    const toUpdate: Array<{ id: string; note_count: number; has_notes: number }> = []
+
     for (const day of remoteDays) {
       const actual = countByDay.get(day.id as string) || 0
       const cached = (day.note_count as number) || 0
 
       if (actual === 0 && cached > 0 && !day.mood) {
-        // item이 0개이고 mood도 없으면 → 서버에서 day 삭제
-        await supabase.from('note_day').delete().eq('id', day.id).eq('user_id', currentUserId)
-        console.log(`[Sync] 서버 stale day 삭제: ${day.id} (count=${cached}, actual=0)`)
+        toDelete.push(day.id as string)
       } else if (actual !== cached) {
-        // count 불일치 → 서버 업데이트 (updated_at 유지 — 핑퐁 방지)
-        await supabase.from('note_day').update({
-          note_count: actual,
-          has_notes: actual > 0 ? 1 : 0
-        }).eq('id', day.id).eq('user_id', currentUserId)
-        console.log(`[Sync] 서버 day count 수정: ${day.id} ${cached}->${actual}`)
+        toUpdate.push({ id: day.id as string, note_count: actual, has_notes: actual > 0 ? 1 : 0 })
       }
+    }
+
+    // 배치 삭제
+    if (toDelete.length > 0) {
+      const { error } = await supabase.from('note_day').delete().in('id', toDelete).eq('user_id', currentUserId)
+      if (!error) slog(`[Sync] 서버 stale day 배치 삭제: ${toDelete.length}건`)
+      else console.error('[Sync] 서버 stale day 삭제 실패:', error.message)
+    }
+
+    // 배치 업데이트 (개별 UPDATE → 병렬 처리)
+    if (toUpdate.length > 0) {
+      await Promise.all(toUpdate.map(u =>
+        supabase!.from('note_day').update({ note_count: u.note_count, has_notes: u.has_notes })
+          .eq('id', u.id).eq('user_id', currentUserId)
+      ))
+      slog(`[Sync] 서버 day count 배치 수정: ${toUpdate.length}건`)
     }
   } catch (err) {
     console.error('[Sync] fixRemoteDayCounts 실패:', err)
@@ -768,16 +784,18 @@ async function pushTombstones(db: Database.Database): Promise<number> {
   }
 
   for (const [tableName, ids] of byTable) {
-    for (const id of ids) {
+    // 배치 삭제: .in()으로 한 번에 처리 (50개씩)
+    for (let i = 0; i < ids.length; i += 50) {
+      const batch = ids.slice(i, i + 50)
       try {
-        const { error } = await supabase.from(tableName).delete().eq('id', id).eq('user_id', currentUserId)
+        const { error } = await supabase.from(tableName).delete().in('id', batch).eq('user_id', currentUserId)
         if (!error) {
-          count++
+          count += batch.length
         } else {
-          console.error(`[Sync] tombstone 삭제 실패 (${tableName}/${id}):`, error.message)
+          console.error(`[Sync] tombstone 배치 삭제 실패 (${tableName}):`, error.message)
         }
       } catch (err) {
-        console.error(`[Sync] tombstone 삭제 에러 (${tableName}/${id}):`, err)
+        console.error(`[Sync] tombstone 배치 삭제 에러 (${tableName}):`, err)
       }
     }
   }
@@ -810,36 +828,49 @@ async function pushTombstones(db: Database.Database): Promise<number> {
  * - 원격에 **없는** 항목은 push하지 않음 (다른 기기에서 삭제된 것으로 간주)
  * - 새로 생성된 항목은 단건 sync(syncNoteItem 등)로 즉시 올라감
  * - 단건 sync 실패 시 pendingSyncQueue에서 재시도
+ * - cachedRemote*: pull에서 이미 조회한 서버 데이터를 재사용 (서버 재조회 제거)
  */
 async function pushChanges(
   db: Database.Database,
-  lastSyncAt?: number
+  lastSyncAt?: number,
+  cachedRemoteDays?: NoteDayRow[],
+  cachedRemoteItems?: NoteItemRow[],
+  cachedRemoteAlarms?: AlarmRow[]
 ): Promise<number> {
   if (!supabase || !currentUserId) return 0
   let count = 0
 
-  // 1) pendingSyncQueue 재시도 (단건 sync 실패분)
-  count += await flushPendingSyncQueue()
+  // 1) pendingSyncQueue 재시도 (단건 sync 실패분, tombstone 체크 포함)
+  count += await flushPendingSyncQueue(db)
 
-  // 2) 원격 전체 id + updated_at 조회
+  // 2) pull에서 이미 가져온 데이터 재사용 (서버 재조회 제거 → 성능 개선)
   const remoteDayMap = new Map<string, number>()
   const remoteItemMap = new Map<string, number>()
   const remoteAlarmMap = new Map<string, number>()
 
-  const [{ data: remoteDays }, { data: remoteItems }, { data: remoteAlarms }] = await Promise.all([
-    supabase.from('note_day').select('id, updated_at').eq('user_id', currentUserId),
-    supabase.from('note_item').select('id, updated_at').eq('user_id', currentUserId),
-    supabase.from('alarm').select('id, updated_at').eq('user_id', currentUserId),
-  ])
-  for (const r of remoteDays ?? []) remoteDayMap.set(r.id, r.updated_at)
-  for (const r of remoteItems ?? []) remoteItemMap.set(r.id, r.updated_at)
-  for (const r of remoteAlarms ?? []) remoteAlarmMap.set(r.id, r.updated_at)
+  if (cachedRemoteDays && cachedRemoteItems && cachedRemoteAlarms) {
+    for (const r of cachedRemoteDays) remoteDayMap.set(r.id as string, r.updated_at as number)
+    for (const r of cachedRemoteItems) remoteItemMap.set(r.id as string, r.updated_at as number)
+    for (const r of cachedRemoteAlarms) remoteAlarmMap.set(r.id as string, r.updated_at as number)
+  } else {
+    // fallback: 캐시가 없으면 서버 조회 (하위 호환)
+    const [{ data: remoteDays }, { data: remoteItems }, { data: remoteAlarms }] = await Promise.all([
+      supabase.from('note_day').select('id, updated_at').eq('user_id', currentUserId),
+      supabase.from('note_item').select('id, updated_at').eq('user_id', currentUserId),
+      supabase.from('alarm').select('id, updated_at').eq('user_id', currentUserId),
+    ])
+    for (const r of remoteDays ?? []) remoteDayMap.set(r.id, r.updated_at)
+    for (const r of remoteItems ?? []) remoteItemMap.set(r.id, r.updated_at)
+    for (const r of remoteAlarms ?? []) remoteAlarmMap.set(r.id, r.updated_at)
+  }
 
   // tombstone 제외
   const tombstones = getTombstones(db)
   const tombstoneSet = new Set(tombstones.map(t => `${t.table_name}:${t.item_id}`))
 
-  // 3) 원격에 없거나 로컬이 더 새로운 항목 push
+  // 3) 로컬이 더 새로운 항목만 push (서버에 없는 항목은 삭제된 것으로 간주)
+  const protectAfter = lastSyncAt ?? 0  // 이 시점 이후 생성된 아이템은 "새로 만든 것"으로 보호
+
   const allDays = (db.prepare('SELECT * FROM note_day').all() as NoteDayRow[])
     .filter(d => !tombstoneSet.has(`note_day:${d.id}`))
   const allItems = (db.prepare('SELECT * FROM note_item').all() as NoteItemRow[])
@@ -847,12 +878,19 @@ async function pushChanges(
   const allAlarms = (db.prepare('SELECT * FROM alarm').all() as AlarmRow[])
     .filter(a => !tombstoneSet.has(`alarm:${a.id}`))
 
-  // 원격에 없거나(새 아이템) 로컬이 더 새로운 것 필터
+  // 서버에 없는 아이템 처리:
+  // - created_at > lastSyncAt → 이번 세션에서 새로 만든 것 → push
+  // - created_at <= lastSyncAt → 다른 기기에서 삭제된 것 → push 안 함
+  // note_day는 캐시 테이블 → 서버에 없으면 항상 push (삭제 복원 위험 없음)
   const daysToUpdate = allDays
     .filter(ld => {
-      const ts = remoteDayMap.get(ld.id)
-      if (ts === undefined || ld.updated_at > ts) {
-        slog(`[Sync:push] day ${ld.id} local_at=${ld.updated_at} remote_at=${ts ?? 'NEW'}`)
+      const ts = remoteDayMap.get(ld.id as string)
+      if (ts === undefined) {
+        slog(`[Sync:push] day ${ld.id} NEW (서버에 없음 → push)`)
+        return true
+      }
+      if ((ld.updated_at as number) > ts) {
+        slog(`[Sync:push] day ${ld.id} local_at=${ld.updated_at} remote_at=${ts}`)
         return true
       }
       return false
@@ -860,56 +898,105 @@ async function pushChanges(
     .map(d => ({ ...d, user_id: currentUserId }))
   const itemsToUpdate = allItems
     .filter(li => {
-      const ts = remoteItemMap.get(li.id)
-      if (ts === undefined || li.updated_at > ts) {
-        slog(`[Sync:push] item ${li.id} local_at=${li.updated_at} remote_at=${ts ?? 'NEW'}`)
+      const ts = remoteItemMap.get(li.id as string)
+      if (ts === undefined) {
+        // 서버에 없는 아이템: created_at 또는 updated_at이 lastSyncAt 이후면 push
+        // (OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각)
+        if ((li.created_at as number) > protectAfter || (li.updated_at as number) > protectAfter) {
+          slog(`[Sync:push] item ${li.id} NEW (created=${li.created_at}, updated=${li.updated_at}, lastSync=${protectAfter})`)
+          return true
+        }
+        // created_at과 updated_at 모두 lastSyncAt 이전 → 서버에서 삭제된 아이템
+        return false
+      }
+      if ((li.updated_at as number) > ts) {
+        slog(`[Sync:push] item ${li.id} local_at=${li.updated_at} remote_at=${ts}`)
         return true
       }
       return false
     })
     .map(i => ({ ...i, user_id: currentUserId }))
   const alarmsToUpdate = allAlarms
-    .filter(la => { const ts = remoteAlarmMap.get(la.id); return ts === undefined || la.updated_at > ts })
+    .filter(la => {
+      const ts = remoteAlarmMap.get(la.id as string)
+      if (ts === undefined) {
+        // OneDrive 병합으로 들어온 알람도 push되도록 updated_at도 체크
+        return (la.created_at as number) > protectAfter || (la.updated_at as number) > protectAfter
+      }
+      return (la.updated_at as number) > ts
+    })
     .map(a => ({ ...a, user_id: currentUserId }))
 
-  // note_day push
-  for (let i = 0; i < daysToUpdate.length; i += 50) {
-    const batch = daysToUpdate.slice(i, i + 50)
-    const { error } = await supabase.from('note_day').upsert(batch, { onConflict: 'id,user_id' })
-    if (error) console.error('[Sync] note_day push 실패:', error.message)
-    else count += batch.length
+  // LWW push: 서버에 이미 있는 항목은 updated_at 비교 후 update, 없는 항목은 insert
+  // upsert는 서버측 LWW 없이 무조건 덮어쓰므로 사용하지 않음
+  async function lwwPush(table: string, items: Record<string, unknown>[], remoteMap: Map<string, number>): Promise<number> {
+    if (!supabase || items.length === 0) return 0
+    let pushed = 0
+    const toInsert: Record<string, unknown>[] = []
+    const toUpdate: Record<string, unknown>[] = []
+
+    for (const item of items) {
+      const remoteTs = remoteMap.get(item.id as string)
+      if (remoteTs === undefined) {
+        toInsert.push(item)
+      } else if ((item.updated_at as number) > remoteTs) {
+        toUpdate.push(item)
+      }
+    }
+
+    // 새 항목 insert (배치)
+    for (let i = 0; i < toInsert.length; i += 50) {
+      const batch = toInsert.slice(i, i + 50)
+      const { error } = await supabase.from(table).upsert(batch, { onConflict: 'id,user_id' })
+      if (!error) pushed += batch.length
+      else console.error(`[Sync] ${table} insert 실패:`, error.message)
+    }
+
+    // 기존 항목 update: 서버측 LWW — .lt('updated_at', localValue)로 서버가 더 오래된 경우만
+    for (const item of toUpdate) {
+      const { error, count: updatedCount } = await supabase.from(table)
+        .update(item)
+        .eq('id', item.id)
+        .eq('user_id', currentUserId)
+        .lt('updated_at', item.updated_at as number)
+      if (!error) pushed++
+      else console.error(`[Sync] ${table} update 실패:`, error.message)
+    }
+
+    return pushed
   }
 
-  // note_item push
-  for (let i = 0; i < itemsToUpdate.length; i += 50) {
-    const batch = itemsToUpdate.slice(i, i + 50)
-    const { error } = await supabase.from('note_item').upsert(batch, { onConflict: 'id,user_id' })
-    if (error) console.error('[Sync] note_item push 실패:', error.message)
-    else count += batch.length
-  }
-
-  // alarm push
-  for (let i = 0; i < alarmsToUpdate.length; i += 50) {
-    const batch = alarmsToUpdate.slice(i, i + 50)
-    const { error } = await supabase.from('alarm').upsert(batch, { onConflict: 'id,user_id' })
-    if (error) console.error('[Sync] alarm push 실패:', error.message)
-    else count += batch.length
-  }
+  count += await lwwPush('note_day', daysToUpdate, remoteDayMap)
+  count += await lwwPush('note_item', itemsToUpdate, remoteItemMap)
+  count += await lwwPush('alarm', alarmsToUpdate, remoteAlarmMap)
 
   return count
 }
 
-/** pendingSyncQueue 재시도 (단건 sync 실패분 처리) */
-async function flushPendingSyncQueue(): Promise<number> {
+/** pendingSyncQueue 재시도 (단건 sync 실패분 처리, tombstone 항목은 건너뜀) */
+async function flushPendingSyncQueue(db?: Database.Database): Promise<number> {
   if (!supabase || !currentUserId || pendingSyncQueue.length === 0) return 0
   let count = 0
   const remaining: PendingSync[] = []
 
+  // tombstone에 있는 아이템은 upsert하면 안 됨 (삭제된 아이템 부활 방지)
+  let tombstoneSet: Set<string> | null = null
+  if (db) {
+    const tombstones = getTombstones(db)
+    tombstoneSet = new Set(tombstones.map(t => `${t.table_name}:${t.item_id}`))
+  }
+
   for (const p of pendingSyncQueue) {
     try {
       if (p.action === 'upsert' && p.data) {
+        const itemId = (p.data as Record<string, unknown>).id as string
+        // tombstone에 있으면 건너뜀 (삭제된 아이템 재업로드 방지)
+        if (tombstoneSet && tombstoneSet.has(`${p.table}:${itemId}`)) {
+          slog(`[Sync] pendingQueue 건너뜀 (tombstone): ${p.table}/${itemId}`)
+          continue
+        }
         const { error } = await supabase.from(p.table).upsert(
-          { ...p.data, user_id: currentUserId }, { onConflict: p.table === 'note_day' ? 'id,user_id' : 'id,user_id' }
+          { ...p.data, user_id: currentUserId }, { onConflict: 'id,user_id' }
         )
         if (error) { remaining.push(p); continue }
       } else if (p.action === 'delete' && p.id) {

@@ -53,6 +53,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   const [dataPath, setDataPath] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
+  const [closeToTray, setCloseToTray] = useState(false)
   const [autoBackup, setAutoBackup] = useState(true)
   const [backupPath, setBackupPath] = useState('')
   const [showHelp, setShowHelp] = useState(false)
@@ -64,6 +65,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   const [syncStatus, setSyncStatus] = useState<'offline' | 'online' | 'syncing' | 'error'>('offline')
   const [onedrivePath, setOnedrivePath] = useState('')
   const [onedriveEnabled, setOnedriveEnabled] = useState(false)
+  const [initialSyncDone, setInitialSyncDone] = useState(false)
 
   const selectDate = useCalendarStore((s) => s.selectDate)
 
@@ -98,12 +100,21 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   // 동기화 상태 리스너
   useEffect(() => {
     window.api.getSyncStatus().then((s: { online: boolean; reachable: boolean }) => {
-      setSyncStatus(s.online && s.reachable ? 'online' : 'offline')
+      const status = s.online && s.reachable ? 'online' : 'offline'
+      setSyncStatus(status)
+      // 오프라인이면 sync를 기다릴 필요 없음
+      if (status === 'offline') setInitialSyncDone(true)
     })
     const unsub = window.api.onSyncStatus((status: string) => {
       setSyncStatus(status as 'offline' | 'online' | 'syncing' | 'error')
     })
     return unsub
+  }, [])
+
+  // 첫 sync 완료 대기 (최대 8초 → 타임아웃 시 그냥 표시)
+  useEffect(() => {
+    const timer = setTimeout(() => setInitialSyncDone(true), 8000)
+    return () => clearTimeout(timer)
   }, [])
 
   // 동기화 완료 시 달력 + 현재 날짜 데이터 새로고침
@@ -112,11 +123,12 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
     const unsub = window.api.onSyncDone(() => {
       const dayId = useDayStore.getState().dayId
       console.log('[sync:done IPC] 수신 — dayId:', dayId)
+      if (!initialSyncDone) setInitialSyncDone(true)
       loadMonth(currentMonth)
       if (dayId) useDayStore.getState().load(dayId)
     })
     return unsub
-  }, [currentMonth, loadMonth])
+  }, [currentMonth, loadMonth, initialSyncDone])
 
   // 방법2: executeJavaScript → window 이벤트 (IPC 우회, 확실한 방법)
   useEffect(() => {
@@ -149,6 +161,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
     })
     window.api.getDataPath().then(setDataPath)
     window.api.getAutoLaunch().then(setAutoLaunch)
+    window.api.getCloseToTray().then(setCloseToTray)
     window.api.getBackupConfig().then((cfg) => {
       setAutoBackup(cfg.autoBackup)
       setBackupPath(cfg.backupPath)
@@ -239,6 +252,16 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-900">
       <TitleBar />
+
+      {/* 첫 동기화 완료 전 로딩 오버레이 */}
+      {!initialSyncDone && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
+          <div className="text-center">
+            <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-sm text-gray-500 dark:text-gray-400">동기화 중...</p>
+          </div>
+        </div>
+      )}
 
       {/* 알람 팝업 */}
       {alarmPopup && (
@@ -341,6 +364,20 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                     className="w-3.5 h-3.5 accent-accent-500"
                   />
                   <span className="text-[11px] text-gray-500 dark:text-gray-400">Windows 시작 시 자동 실행</span>
+                </label>
+
+                {/* 닫기 시 트레이로 최소화 */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={closeToTray}
+                    onChange={(e) => {
+                      setCloseToTray(e.target.checked)
+                      window.api.setCloseToTray(e.target.checked)
+                    }}
+                    className="w-3.5 h-3.5 accent-accent-500"
+                  />
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400">닫기 시 트레이로 최소화</span>
                 </label>
 
                 {/* 데이터 내보내기/가져오기 */}

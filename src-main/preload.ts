@@ -28,6 +28,8 @@ const api = {
   setDarkMode:   (mode: string) => ipcRenderer.invoke('app:setDarkMode', mode),
   getAutoLaunch: () => ipcRenderer.invoke('app:getAutoLaunch'),
   setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke('app:setAutoLaunch', enabled),
+  getCloseToTray: () => ipcRenderer.invoke('app:getCloseToTray'),
+  setCloseToTray: (enabled: boolean) => ipcRenderer.invoke('app:setCloseToTray', enabled),
 
   // ── 설정: 저장 경로 ──
   getDataPath:    () => ipcRenderer.invoke('app:getDataPath'),

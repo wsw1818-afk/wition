@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, No
 import { join, basename, extname, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, copyFileSync, statSync, appendFileSync } from 'fs'
+import { createServer, IncomingMessage, ServerResponse } from 'http'
 import Database from 'better-sqlite3'
 import { initializeSchema } from './db/schema'
 import * as Q from './db/queries'
@@ -40,6 +41,7 @@ interface AppConfig {
   savedPasswordEnc?: string                 // 기억된 비밀번호 (safeStorage 암호화, base64)
   onedriveSyncPath?: string                 // OneDrive DB 동기화 경로
   onedriveSyncEnabled?: boolean             // OneDrive 자동 동기화 활성화
+  closeToTray?: boolean                     // 닫기 시 트레이로 최소화
 }
 
 const CONFIG_FILE = join(app.getPath('userData'), 'config.json')
@@ -132,6 +134,14 @@ migrateDataPath()
 /* ─────────────────────────── DB 초기화 ──────────────────────────── */
 
 let db: Database.Database
+
+// syncLog를 전역으로 정의 (IPC 핸들러에서 참조 가능하도록)
+const syncLogPath = join(app.getPath('userData'), 'sync.log')
+const syncLog = (msg: string): void => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  console.log(msg)
+  try { writeFileSync(syncLogPath, line, { flag: 'a' }) } catch {}
+}
 
 function ensureDataDir(): void {
   if (!existsSync(config.dataPath)) {
@@ -234,6 +244,18 @@ function exportDbToOneDrive(): { ok: boolean; error?: string } {
       try { db.pragma('wal_checkpoint(TRUNCATE)') } catch {}
     }
     copyFileSync(localDbPath, remotePath)
+    // WAL/SHM 파일도 함께 복사 (체크포인트 실패 시 데이터 유실 방지)
+    const walPath = localDbPath + '-wal'
+    const shmPath = localDbPath + '-shm'
+    const remoteWal = remotePath + '-wal'
+    const remoteShm = remotePath + '-shm'
+    if (existsSync(walPath)) {
+      try { copyFileSync(walPath, remoteWal) } catch {}
+    } else {
+      // 체크포인트 성공 시 WAL 없음 → OneDrive의 잔여 WAL도 제거
+      try { if (existsSync(remoteWal)) unlinkSync(remoteWal) } catch {}
+      try { if (existsSync(remoteShm)) unlinkSync(remoteShm) } catch {}
+    }
 
     // 3) 첨부파일 양방향 복사 (없는 파일만)
     const localAttach = join(config.dataPath, 'attachments')
@@ -317,8 +339,31 @@ function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
       WHERE @updated_at > alarm.updated_at
     `)
 
+    // tombstone 로드: 로컬에서 삭제된 항목은 OneDrive에서 가져오지 않음
+    const localTombstones = new Map<string, number>()
+    try {
+      const rows = db.prepare('SELECT table_name, item_id, deleted_at FROM deleted_items').all() as Array<{ table_name: string; item_id: string; deleted_at: number }>
+      for (const r of rows) localTombstones.set(`${r.table_name}:${r.item_id}`, r.deleted_at)
+    } catch {} // deleted_items 테이블이 없을 수 있음
+
+    // OneDrive DB의 tombstone도 로컬에 반영
+    try {
+      const remoteTombstones = remoteDb.prepare('SELECT table_name, item_id, deleted_at FROM deleted_items').all() as Array<{ table_name: string; item_id: string; deleted_at: number }>
+      const insertTombstone = db.prepare('INSERT OR REPLACE INTO deleted_items (table_name, item_id, deleted_at) VALUES (?, ?, ?)')
+      for (const rt of remoteTombstones) {
+        const localDelAt = localTombstones.get(`${rt.table_name}:${rt.item_id}`)
+        if (!localDelAt || rt.deleted_at > localDelAt) {
+          insertTombstone.run(rt.table_name, rt.item_id, rt.deleted_at)
+          localTombstones.set(`${rt.table_name}:${rt.item_id}`, rt.deleted_at)
+        }
+      }
+    } catch {} // OneDrive DB에 deleted_items가 없을 수 있음
+
     db.transaction(() => {
       for (const rd of remoteDays) {
+        // tombstone 체크: 로컬에서 삭제된 day는 병합하지 않음
+        const delAt = localTombstones.get(`note_day:${rd.id}`)
+        if (delAt !== undefined && (rd.updated_at as number) <= delAt) continue
         const local = localSelectDay.get(rd.id) as { updated_at: number } | undefined
         if (!local || (rd.updated_at as number) > local.updated_at) {
           upsertDay.run(rd)
@@ -326,6 +371,9 @@ function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
         }
       }
       for (const ri of remoteItems) {
+        // tombstone 체크: 로컬에서 삭제된 item은 병합하지 않음
+        const delAt = localTombstones.get(`note_item:${ri.id}`)
+        if (delAt !== undefined && (ri.updated_at as number) <= delAt) continue
         const local = localSelectItem.get(ri.id) as { updated_at: number } | undefined
         if (!local || (ri.updated_at as number) > local.updated_at) {
           ensureDay.run({ id: ri.day_id, updated_at: ri.updated_at })
@@ -334,11 +382,23 @@ function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
         }
       }
       for (const ra of remoteAlarms) {
+        // tombstone 체크: 로컬에서 삭제된 alarm은 병합하지 않음
+        const delAt = localTombstones.get(`alarm:${ra.id}`)
+        if (delAt !== undefined && (ra.updated_at as number) <= delAt) continue
         const local = localSelectAlarm.get(ra.id) as { updated_at: number } | undefined
         if (!local || (ra.updated_at as number) > local.updated_at) {
           upsertAlarm.run(ra)
           merged++
         }
+      }
+
+      // tombstone에 해당하는 로컬 데이터도 삭제 (단, tombstone보다 새로운 데이터는 보호)
+      const deleteItem = db.prepare('DELETE FROM note_item WHERE id = ? AND updated_at <= ?')
+      const deleteAlarm = db.prepare('DELETE FROM alarm WHERE id = ? AND updated_at <= ?')
+      for (const [key, delAt] of localTombstones) {
+        const [table, id] = key.split(':')
+        if (table === 'note_item') deleteItem.run(id, delAt)
+        else if (table === 'alarm') deleteAlarm.run(id, delAt)
       }
     })()
 
@@ -358,6 +418,16 @@ function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
     // note_day 캐시 재계산
     Q.refreshAllSummaries(db)
     console.log(`[onedrive-sync] 병합 완료: ${merged}건`)
+
+    // OneDrive에서 데이터를 병합한 후 lastSyncAt을 리셋
+    // → 다음 fullSync에서 병합된 데이터가 cleanDeletedFromRemote에서 삭제되지 않도록 보호
+    // → created_at이 오래된 OneDrive 데이터도 서버에 정상 push됨
+    if (merged > 0) {
+      config.lastSyncAt = 0
+      saveConfig(config)
+      console.log('[onedrive-sync] lastSyncAt 리셋 → 다음 fullSync에서 전체 동기화')
+    }
+
     return { ok: true, merged }
   } catch (err) {
     console.error('[onedrive-sync] 병합 실패:', err)
@@ -408,6 +478,10 @@ function stopOneDriveSync(): void {
 /* ─────────────────────── 알람 타이머 ──────────────────────────── */
 
 let alarmInterval: ReturnType<typeof setInterval> | null = null
+let quickPullInterval: ReturnType<typeof setInterval> | null = null
+let fullSyncInterval: ReturnType<typeof setInterval> | null = null
+let healthCheckInterval: ReturnType<typeof setInterval> | null = null
+let testHttpServer: ReturnType<typeof createServer> | null = null
 
 let lastResetDate = ''
 
@@ -528,10 +602,23 @@ let tray: Tray | null = null
 let isQuitting = false   // 실제 종료 vs 트레이 최소화 구분
 
 function getIconPath(): string {
-  if (app.isPackaged) {
-    return join(process.resourcesPath, 'icon.ico')
+  const { existsSync } = require('fs')
+
+  // 후보 경로들 (우선순위 순)
+  const candidates = [
+    join(process.resourcesPath, 'icon.ico'),                    // 패키징된 앱
+    join(app.getAppPath(), 'build', 'icon.ico'),                // 앱 루트/build
+    join(__dirname, '../build/icon.ico'),                        // 개발 모드 (dist-electron → ../build)
+    join(__dirname, '../../build/icon.ico'),                     // 개발 모드 (dist-electron/main → ../../build)
+    join(__dirname, '../../resources/resources/icon.ico'),       // resources 폴더
+  ]
+
+  for (const p of candidates) {
+    if (existsSync(p)) return p
   }
-  return join(__dirname, '../../build/icon.ico')
+
+  // fallback: Electron 실행파일 아이콘
+  return app.getPath('exe')
 }
 
 function createTray(): void {
@@ -560,11 +647,25 @@ function createTray(): void {
 
     tray.setContextMenu(contextMenu)
 
-    // 트레이 아이콘 더블클릭 → 창 복원
-    tray.on('double-click', () => {
+    // 트레이 아이콘 클릭/더블클릭 → 창 복원
+    const restoreWindow = () => {
       const win = BrowserWindow.getAllWindows()[0]
-      if (win) { win.show(); win.focus() }
-    })
+      console.log('[Tray] restoreWindow called, win exists:', !!win)
+      if (win) {
+        console.log('[Tray] isVisible:', win.isVisible(), 'isMinimized:', win.isMinimized(), 'isDestroyed:', win.isDestroyed())
+        win.show()
+        win.restore()
+        win.setAlwaysOnTop(true)
+        win.focus()
+        win.setAlwaysOnTop(false)
+        console.log('[Tray] after restore — isVisible:', win.isVisible())
+      } else {
+        console.log('[Tray] no window found, recreating')
+        createWindow()
+      }
+    }
+    tray.on('click', restoreWindow)
+    tray.on('double-click', restoreWindow)
   } catch (err) {
     console.error('Tray creation failed:', err)
   }
@@ -614,11 +715,13 @@ function createWindow(): BrowserWindow {
   // 로딩 완료 후 표시
   win.once('ready-to-show', () => win.show())
 
-  // 닫기 버튼 → 트레이로 최소화 (실제 종료가 아닌 경우)
+  // 닫기 버튼 → 트레이로 최소화 또는 종료
   win.on('close', (e) => {
-    if (!isQuitting) {
+    console.log('[Window] close event — isQuitting:', isQuitting, 'closeToTray:', config.closeToTray)
+    if (!isQuitting && config.closeToTray) {
       e.preventDefault()
       win.hide()
+      console.log('[Window] hidden to tray — isVisible:', win.isVisible(), 'isDestroyed:', win.isDestroyed())
     }
   })
 
@@ -755,6 +858,15 @@ function registerIpcHandlers(): void {
       path: exePath
     })
     config.autoLaunch = enabled
+    saveConfig(config)
+  })
+
+  ipcMain.handle('app:getCloseToTray', () => {
+    return config.closeToTray ?? false
+  })
+
+  ipcMain.handle('app:setCloseToTray', (_e, enabled: boolean) => {
+    config.closeToTray = enabled
     saveConfig(config)
   })
 
@@ -1375,13 +1487,6 @@ app.whenReady().then(() => {
   createWindow()
 
   // ── 하이브리드 동기화 (Supabase + OneDrive) ──
-  const syncLogPath = join(app.getPath('userData'), 'sync.log')
-  const syncLog = (msg: string) => {
-    const line = `[${new Date().toISOString()}] ${msg}\n`
-    console.log(msg)
-    try { writeFileSync(syncLogPath, line, { flag: 'a' }) } catch {}
-  }
-
   Sync.setLogFn(syncLog)
   const HEALTH_CHECK_MS = 60 * 1000        // 1분마다 연결 상태 체크
   let wasReachable = false
@@ -1496,7 +1601,6 @@ app.whenReady().then(() => {
     Sync.setUserId(config.authUser.id)
     syncLog(`userId 복원: ${config.authUser.id}`)
   }
-
   Sync.initSync().then(async online => {
     syncLog(`initSync: online=${online}, db=${!!db}, lastSyncAt=${config.lastSyncAt}, userId=${Sync.getUserId()}`)
 
@@ -1557,7 +1661,7 @@ app.whenReady().then(() => {
       }, 3000)
 
       // 경량 폴링: 5초 간격 (Realtime이 메인, quickPull은 fallback)
-      setInterval(async () => {
+      quickPullInterval = setInterval(async () => {
         if (!db || !Sync.isOnline()) return
         try {
           const pulled = await Sync.quickPull(db)
@@ -1568,10 +1672,10 @@ app.whenReady().then(() => {
       }, 5000)
 
       // 전체 동기화: 10초 간격 (push + 삭제 감지 + 첨부파일)
-      setInterval(() => runSync(), 10000)
+      fullSyncInterval = setInterval(() => runSync(), 10000)
 
       // 1분마다 연결 상태 체크 (오프라인→온라인 전환 시 즉시 동기화 + Realtime 재연결)
-      setInterval(async () => {
+      healthCheckInterval = setInterval(async () => {
         const nowReachable = await Sync.checkConnection()
         broadcastSyncStatus(nowReachable ? 'online' : 'offline')
         if (nowReachable && !wasReachable) {
@@ -1590,6 +1694,69 @@ app.whenReady().then(() => {
       broadcastSyncStatus('offline')
     }
   })
+
+  // ── 테스트용 HTTP 서버 (개발 모드에서만 활성화) ──
+  if (process.env.NODE_ENV !== 'production' || process.env.WITION_TEST_HTTP === '1') {
+    const TEST_PORT = 19876
+    testHttpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+      res.setHeader('Content-Type', 'application/json')
+      const url = req.url || '/'
+
+      try {
+        if (url === '/sync' && req.method === 'POST') {
+          // 즉시 fullSync 실행 (진행 중이면 완료 대기 후 재시도)
+          if (!db) { res.end(JSON.stringify({ ok: false, reason: 'no db' })); return }
+          for (let w = 0; w < 20 && Sync.isSyncing(); w++) {
+            await new Promise(r => setTimeout(r, 500))
+          }
+          const { pulled, pushed, cleaned, syncedAt } = await Sync.fullSync(db!, config.lastSyncAt)
+          if (syncedAt > 0) { config.lastSyncAt = syncedAt; saveConfig(config) }
+          if (pulled > 0 || pushed > 0 || cleaned > 0) {
+            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+          }
+          res.end(JSON.stringify({ ok: true, pulled, pushed, cleaned }))
+        } else if (url.startsWith('/query') && req.method === 'GET') {
+          // SQL 쿼리 실행 (읽기 전용)
+          const u = new URL(req.url!, `http://localhost:${TEST_PORT}`)
+          const sql = u.searchParams.get('sql')
+          if (!sql || !db) { res.end(JSON.stringify({ rows: [] })); return }
+          // DDL 명령 차단 (첫 단어로만 판별 — 컬럼명 created_at 등 오탐 방지)
+          const sqlFirst = sql.trim().split(/\s/)[0].toLowerCase()
+          if (['drop', 'alter', 'create'].includes(sqlFirst)) {
+            res.end(JSON.stringify({ error: 'forbidden' })); return
+          }
+          // SQL 명령어 레벨 체크
+          const sqlCmd = sql.trim().split(/\s/)[0].toLowerCase()
+          // INSERT/UPDATE/DELETE는 테스트 날짜(2027-) 또는 메타 테이블(deleted_items/pending_sync)만 허용
+          const isMetaTable = /deleted_items|pending_sync/i.test(sql)
+          if ((sqlCmd === 'insert' || sqlCmd === 'update' || sqlCmd === 'delete') && !isMetaTable && !/2027-/.test(sql)) {
+            res.end(JSON.stringify({ error: `only test-date ${sqlCmd.toUpperCase()} allowed` })); return
+          }
+          if (sqlCmd === 'insert' || sqlCmd === 'update' || sqlCmd === 'delete') {
+            const info = db.prepare(sql).run()
+            res.end(JSON.stringify({ changes: info.changes }))
+          } else {
+            const rows = db.prepare(sql).all()
+            res.end(JSON.stringify({ rows }))
+          }
+        } else if (url === '/ping') {
+          res.end(JSON.stringify({ ok: true, time: Date.now() }))
+        } else {
+          res.statusCode = 404
+          res.end(JSON.stringify({ error: 'not found' }))
+        }
+      } catch (err) {
+        res.statusCode = 500
+        res.end(JSON.stringify({ error: String(err) }))
+      }
+    })
+    testHttpServer.listen(TEST_PORT, '127.0.0.1', () => {
+      syncLog(`[TestHTTP] 테스트 서버 시작: http://127.0.0.1:${TEST_PORT}`)
+    })
+    testHttpServer.on('error', (err) => {
+      syncLog(`[TestHTTP] 서버 시작 실패: ${err.message}`)
+    })
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1614,11 +1781,17 @@ app.on('before-quit', () => {
   stopAutoBackup()
   stopOneDriveSync()
   stopAlarmChecker()
+  // 동기화 타이머 정리
+  if (quickPullInterval) { clearInterval(quickPullInterval); quickPullInterval = null }
+  if (fullSyncInterval) { clearInterval(fullSyncInterval); fullSyncInterval = null }
+  if (healthCheckInterval) { clearInterval(healthCheckInterval); healthCheckInterval = null }
+  // 테스트 HTTP 서버 종료
+  if (testHttpServer) { testHttpServer.close(); testHttpServer = null }
 })
 
 app.on('window-all-closed', () => {
-  // 트레이 모드에서는 창이 닫혀도 앱 종료하지 않음
-  if (!isQuitting) return
+  // 트레이 모드에서만 창이 닫혀도 앱 유지
+  if (!isQuitting && config.closeToTray) return
   stopAutoBackup()
   db?.close()
   if (process.platform !== 'darwin') app.quit()
