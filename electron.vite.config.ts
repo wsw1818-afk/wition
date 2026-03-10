@@ -15,7 +15,8 @@ export default defineConfig({
     build: {
       outDir: 'dist-electron/main',
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src-main/main.ts') }
+        input: { index: resolve(__dirname, 'src-main/main.ts') },
+        external: ['ws', 'bufferutil', 'utf-8-validate']
       }
     }
   },

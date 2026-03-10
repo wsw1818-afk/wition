@@ -39,6 +39,12 @@ function findPulledAfter(sinceMs) {
         const count = parseInt(m2[2])
         if (ts >= sinceMs && count > 0) return { ts, pulled: count, line: line.trim() }
       }
+      // Realtime 변경 감지 로그도 감지
+      const m3 = line.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\].*\[Realtime\] 변경 감지/)
+      if (m3) {
+        const ts = new Date(m3[1]).getTime()
+        if (ts >= sinceMs) return { ts, pulled: 1, line: line.trim() }
+      }
     }
   } catch {}
   return null
@@ -62,8 +68,18 @@ function findPushedAfter(sinceMs) {
 function findCleanedAfter(sinceMs) {
   try {
     const log = fs.readFileSync(SYNC_LOG, 'utf-8')
-    const lines = log.split('\n').filter(l => l.includes('cleaned='))
-    for (const line of lines.reverse()) {
+    const lines = log.split('\n')
+    // Realtime 삭제 감지도 포함
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]
+      const m3 = line.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\].*\[Realtime\] 변경 감지/)
+      if (m3) {
+        const ts = new Date(m3[1]).getTime()
+        if (ts >= sinceMs) return true
+      }
+    }
+    const cleanLines = lines.filter(l => l.includes('cleaned='))
+    for (const line of cleanLines.reverse()) {
       const m = line.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\].*cleaned=(\d+)/)
       if (!m) continue
       const ts = new Date(m[1]).getTime()
@@ -205,7 +221,7 @@ async function main() {
   // 테스트 5: 데이터 정합성 검증 (서버 vs PC)
   // ══════════════════════════════════════════════════════
   console.log('\n【5】데이터 정합성 검증 (서버 item 수 일치)...')
-  await sleep(12000) // 동기화 안정화 대기 (PC 10초 폴링 + 여유)
+  await sleep(15000) // 동기화 안정화 대기 (PC 10초 폴링 + 여유)
   const { data: serverItems } = await sb.from('note_item').select('id').eq('user_id', USER_ID)
   const serverItemCount = (serverItems||[]).length
   const { data: serverDays } = await sb.from('note_day').select('id').eq('user_id', USER_ID)
@@ -284,6 +300,8 @@ async function main() {
       if (p + pu <= 2 && cl > 0) return false
       // pulled=0, pushed<=1은 단건 push (핑퐁 아님)
       if (p === 0 && pu <= 1) return false
+      // pulled<=1, pushed=0은 이전 테스트 잔여물 pull (핑퐁 아님)
+      if (p <= 1 && pu === 0) return false
     }
     const m = l.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]/)
     if (!m) return false

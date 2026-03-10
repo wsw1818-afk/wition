@@ -183,9 +183,8 @@ function connectRealtime(): void {
   }
   realtimeSubscribed = false
 
-  // @ts-ignore — 내부 디버깅용
-  const wsUrl = supabaseRealtime?.['realtimeUrl'] || supabaseRealtime?.['realtime']?.['endPoint'] || 'unknown'
-  slog(`[Realtime] 채널 생성 중... (endpoint: ${wsUrl})`)
+  slog(`[Realtime] 채널 생성 중...`)
+
   realtimeChannel = supabaseRealtime
     .channel('sync-realtime')
     .on(
@@ -264,13 +263,16 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
     if (eventType === 'DELETE') {
       const oldRow = payload.old as Record<string, unknown>
       const id = oldRow.id as string
-      if (!id) return
-      realtimeDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
+      if (!id) {
+        slog(`[Realtime] ${table} DELETE 이벤트에 id 없음 (replica identity 확인 필요): ${JSON.stringify(payload.old)}`)
+        return
+      }
+      const info = realtimeDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
       // note_item 삭제 시 day 카운트 갱신 (preserveUpdatedAt: push 핑퐁 방지)
       if (table === 'note_item' && oldRow.day_id) {
         updateDayCount(realtimeDb, oldRow.day_id as string, true)
       }
-      console.log(`[Realtime] ${table} 삭제: ${id}`)
+      slog(`[Realtime] ${table} 삭제: ${id} (changes=${info.changes})`)
     } else {
       // INSERT or UPDATE
       const row = payload.new as Record<string, unknown>
@@ -281,7 +283,7 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
         return
       }
       applyRealtimeUpsert(realtimeDb, table, row)
-      console.log(`[Realtime] ${table} ${eventType}: ${row.id}`)
+      slog(`[Realtime] ${table} ${eventType}: ${row.id}`)
     }
 
     // UI 갱신 콜백

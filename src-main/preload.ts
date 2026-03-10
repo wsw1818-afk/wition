@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+// 디버그: preload 로드 확인
+ipcRenderer.send('debug:preloadLoaded')
+
+// 디버그: preload 레벨에서 sync:done 직접 수신 테스트
+ipcRenderer.on('sync:done', (...args: unknown[]) => {
+  console.log('[preload-direct] sync:done 수신!', args)
+  ipcRenderer.send('debug:syncDoneReceived')
+})
+
 /** 렌더러에서 사용할 API — window.api로 노출 */
 const api = {
   // ── DB 읽기 ──
@@ -50,8 +59,13 @@ const api = {
   syncNow:        () => ipcRenderer.invoke('sync:now'),
   getSyncStatus:  () => ipcRenderer.invoke('sync:getStatus'),
   onSyncDone: (cb: () => void) => {
-    ipcRenderer.on('sync:done', cb)
-    return () => { ipcRenderer.removeListener('sync:done', cb) }
+    const handler = () => {
+      console.log('[preload] sync:done 수신!')
+      ipcRenderer.send('debug:syncDoneReceived')
+      cb()
+    }
+    ipcRenderer.on('sync:done', handler)
+    return () => { ipcRenderer.removeListener('sync:done', handler) }
   },
   onSyncStatus: (cb: (status: string) => void) => {
     const handler = (_e: unknown, status: string) => cb(status)

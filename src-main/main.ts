@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, Notification, net, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, Notification, net, safeStorage, screen } from 'electron'
 import { join, basename, extname, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, copyFileSync, statSync, appendFileSync } from 'fs'
@@ -576,7 +576,24 @@ function createWindow(): BrowserWindow {
   const darkPref = config.darkMode
   const isDark = darkPref === 'system' ? nativeTheme.shouldUseDarkColors : darkPref === 'dark'
 
-  const bounds = config.windowBounds ?? { width: 1060, height: 720 }
+  const defaultBounds = { width: 1060, height: 720 }
+  let bounds = config.windowBounds ?? defaultBounds
+
+  // 저장된 위치가 모니터 밖이면 화면 중앙으로 재설정
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width: screenW, height: screenH } = primaryDisplay.workAreaSize
+  const { x: screenX, y: screenY } = primaryDisplay.workArea
+  if (
+    bounds.x !== undefined && bounds.y !== undefined && (
+      bounds.x + (bounds.width ?? 1060) < screenX ||
+      bounds.y + (bounds.height ?? 720) < screenY ||
+      bounds.x > screenX + screenW ||
+      bounds.y > screenY + screenH
+    )
+  ) {
+    // 모니터 밖 → 중앙 배치 (x, y 제거하면 Electron이 자동 중앙 배치)
+    bounds = { width: bounds.width ?? defaultBounds.width, height: bounds.height ?? defaultBounds.height }
+  }
 
   const win = new BrowserWindow({
     ...bounds,
@@ -645,8 +662,21 @@ function registerIpcHandlers(): void {
     catch (err) { console.error('getNoteDay error:', err); return null }
   })
 
+  // 디버그: preload 로드 확인
+  ipcMain.on('debug:preloadLoaded', () => {
+    syncLog('[DEBUG] preload 로드 완료!')
+  })
+  // 디버그: Renderer에서 sync:done 수신 확인
+  ipcMain.on('debug:syncDoneReceived', () => {
+    syncLog('[DEBUG] Renderer가 sync:done 수신 확인!')
+  })
+
   ipcMain.handle('db:getNoteItems', (_e, dayId: string) => {
-    try { return Q.getNoteItems(db, dayId) }
+    try {
+      const items = Q.getNoteItems(db, dayId)
+      syncLog(`[IPC] getNoteItems(${dayId}) → ${items.length}개`)
+      return items
+    }
     catch (err) { console.error('getNoteItems error:', err); return [] }
   })
 
@@ -1497,8 +1527,26 @@ app.whenReady().then(() => {
           if (uid && db) {
             syncLog(`[Realtime] userId=${uid} — 실시간 구독 시작`)
             Sync.startRealtime(db, () => {
-              syncLog('[Realtime] 변경 감지 → UI 갱신')
-              BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+              const wins = BrowserWindow.getAllWindows()
+              syncLog(`[Realtime] 변경 감지 → UI 갱신 (windows=${wins.length})`)
+              wins.forEach(w => {
+                if (!w.isDestroyed()) {
+                  const wc = w.webContents
+                  syncLog(`[Realtime] sync:done 전송 (win=${w.id}, loading=${wc.isLoading()})`)
+                  wc.send('sync:done')
+                  // IPC가 안 먹힐 때를 대비: executeJavaScript로 직접 window 이벤트 발생
+                  wc.executeJavaScript(`
+                    (() => {
+                      const e = new Event('sync-refresh');
+                      const dispatched = window.dispatchEvent(e);
+                      const dayId = window.__dayStore_dayId || 'unknown';
+                      return 'dispatched=' + dispatched + ',dayId=' + dayId;
+                    })()
+                  `)
+                    .then(r => syncLog(`[Realtime] sync-refresh 결과: ${r} (win=${w.id})`))
+                    .catch(e => syncLog(`[Realtime] sync-refresh 발송 실패: ${e.message}`))
+                }
+              })
             })
           } else {
             syncLog(`[Realtime] userId 없음 — 1초 후 재시도`)

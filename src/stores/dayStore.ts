@@ -52,6 +52,7 @@ export const useDayStore = create<DayStore>((set, get) => ({
         window.api.getNoteItems(dayId),
         window.api.getAlarms(dayId),
       ])
+      console.log(`[dayStore.load] dayId=${dayId}, items=${items.length}, ids:`, items.map(i => i.id.slice(0,8)))
       set({ items, alarms })
     } catch (err) {
       console.error('dayStore.load:', err)

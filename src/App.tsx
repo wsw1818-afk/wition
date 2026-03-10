@@ -107,13 +107,38 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   }, [])
 
   // 동기화 완료 시 달력 + 현재 날짜 데이터 새로고침
+  // 방법1: preload IPC (기존)
   useEffect(() => {
     const unsub = window.api.onSyncDone(() => {
-      loadMonth(currentMonth)
       const dayId = useDayStore.getState().dayId
+      console.log('[sync:done IPC] 수신 — dayId:', dayId)
+      loadMonth(currentMonth)
       if (dayId) useDayStore.getState().load(dayId)
     })
     return unsub
+  }, [currentMonth, loadMonth])
+
+  // 방법2: executeJavaScript → window 이벤트 (IPC 우회, 확실한 방법)
+  useEffect(() => {
+    // 현재 dayId를 window에 노출 (디버그용)
+    const state = useDayStore.getState()
+    ;(window as any).__dayStore_dayId = state.dayId || 'none'
+  })
+
+  useEffect(() => {
+    const handler = () => {
+      const dayId = useDayStore.getState().dayId
+      console.log('[sync-refresh] window 이벤트 수신 — dayId:', dayId)
+      ;(window as any).__syncRefreshCount = ((window as any).__syncRefreshCount || 0) + 1
+      loadMonth(currentMonth)
+      if (dayId) {
+        useDayStore.getState().load(dayId).then(() => {
+          console.log('[sync-refresh] load 완료 — items:', useDayStore.getState().items.length)
+        })
+      }
+    }
+    window.addEventListener('sync-refresh', handler)
+    return () => window.removeEventListener('sync-refresh', handler)
   }, [currentMonth, loadMonth])
 
   // 초기 다크모드 감지 + 저장 경로 로드

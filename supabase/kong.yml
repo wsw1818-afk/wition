@@ -48,6 +48,10 @@ services:
       - name: key-auth
         config:
           hide_credentials: false
+          key_names:
+            - apikey
+          key_in_query: true
+          key_in_header: true
       - name: acl
         config:
           hide_groups_header: true
