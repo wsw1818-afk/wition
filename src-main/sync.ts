@@ -81,7 +81,7 @@ export async function initSync(): Promise<boolean> {
   for (const url of urls) {
     try {
       const res = await fetch(`${url}/rest/v1/`, { method: 'HEAD', headers: { 'apikey': key }, signal: AbortSignal.timeout(3000) })
-      if (res.status > 0) {
+      if (res.status >= 200 && res.status < 500) {
         supabase = createClient(url, key, {
           realtime: {
             params: { apikey: key },

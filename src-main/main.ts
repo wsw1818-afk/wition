@@ -42,13 +42,21 @@ interface AppConfig {
   onedriveSyncPath?: string                 // OneDrive DB 동기화 경로
   onedriveSyncEnabled?: boolean             // OneDrive 자동 동기화 활성화
   closeToTray?: boolean                     // 닫기 시 트레이로 최소화
+  autoLogin?: boolean                       // 자동 로그인 활성화 (기본: false)
   localAccounts?: Array<{ id: string; email: string; passwordEnc: string }>  // 오프라인 로그인용 로컬 계정
 }
 
-const CONFIG_FILE = join(app.getPath('userData'), 'config.json')
+// Portable exe 실행 시: exe 옆 폴더에 설정 저장 (임시폴더 초기화 방지)
+// 개발 모드: userData 사용
+const PORTABLE_DIR = process.env.PORTABLE_EXECUTABLE_DIR
+  ? join(process.env.PORTABLE_EXECUTABLE_DIR, 'WitionData')
+  : null
+const CONFIG_BASE = PORTABLE_DIR || app.getPath('userData')
+if (PORTABLE_DIR && !existsSync(CONFIG_BASE)) mkdirSync(CONFIG_BASE, { recursive: true })
+const CONFIG_FILE = join(CONFIG_BASE, 'config.json')
 
 function getDefaultDataPath(): string {
-  return join(app.getPath('userData'), 'data')
+  return join(CONFIG_BASE, 'data')
 }
 
 function loadConfig(): AppConfig {
@@ -137,7 +145,7 @@ migrateDataPath()
 let db: Database.Database
 
 // syncLog를 전역으로 정의 (IPC 핸들러에서 참조 가능하도록)
-const syncLogPath = join(app.getPath('userData'), 'sync.log')
+const syncLogPath = join(CONFIG_BASE, 'sync.log')
 const syncLog = (msg: string): void => {
   const line = `[${new Date().toISOString()}] ${msg}\n`
   console.log(msg)
@@ -1318,8 +1326,20 @@ function registerIpcHandlers(): void {
   async function detectAuthBase() {
     for (const base of AUTH_URLS) {
       try {
-        const res = await net.fetch(`${base}/auth/v1/`, { method: 'GET', headers: { 'apikey': AUTH_KEY || '' } })
-        if (res.status > 0) { AUTH_BASE = base; console.log('[auth] 서버 연결:', base); return }
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 3000)
+        const res = await net.fetch(`${base}/auth/v1/`, {
+          method: 'GET',
+          headers: { 'apikey': AUTH_KEY || '' },
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+        // 2xx 또는 401(서버 있음, 인증 실패)이면 서버 존재로 판단
+        if (res.status >= 200 && res.status < 500) {
+          AUTH_BASE = base
+          console.log('[auth] 서버 연결:', base, '(status:', res.status + ')')
+          return
+        }
       } catch { /* 다음 URL 시도 */ }
     }
     console.warn('[auth] 모든 서버 연결 실패, 기본값 사용:', AUTH_BASE)
@@ -1512,6 +1532,17 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
+  // ── 자동 로그인 설정 ──
+  ipcMain.handle('auth:getAutoLogin', () => {
+    return config.autoLogin ?? false
+  })
+
+  ipcMain.handle('auth:setAutoLogin', (_e, enabled: boolean) => {
+    config.autoLogin = enabled
+    saveConfig(config)
+    return { ok: true }
+  })
+
   // ── 오프라인 로그인 ──
   ipcMain.handle('auth:getLocalAccounts', () => {
     return (config.localAccounts || []).map(a => ({ id: a.id, email: a.email }))
@@ -1639,6 +1670,7 @@ app.whenReady().then(() => {
       syncLog('[autoReLogin] 저장된 credentials로 재로그인 시도...')
       // GoTrue 인증 API 직접 호출 — 여러 URL 시도
       const authUrls = [
+        AUTH_BASE,  // detectAuthBase()가 찾은 서버 우선
         process.env.VITE_SUPABASE_URL,
         'http://localhost:8000',
         'http://100.122.232.19:8000',
@@ -1648,11 +1680,15 @@ app.whenReady().then(() => {
       let fetchRes: Response | null = null
       for (const base of authUrls) {
         try {
+          const ctrl = new AbortController()
+          const t = setTimeout(() => ctrl.abort(), 5000)
           fetchRes = await net.fetch(`${base}/auth/v1/token?grant_type=password`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'apikey': authKey },
-            body: JSON.stringify({ email: config.savedEmail, password })
+            body: JSON.stringify({ email: config.savedEmail, password }),
+            signal: ctrl.signal,
           })
+          clearTimeout(t)
           if (fetchRes.status > 0) { syncLog(`[autoReLogin] 서버 연결: ${base}`); break }
         } catch { fetchRes = null }
       }
