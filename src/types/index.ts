@@ -202,6 +202,8 @@ export interface ElectronAPI {
   authLogin:        (email: string, password: string) => Promise<{ ok: boolean; user?: AuthUser; error?: string }>
   authLogout:       () => Promise<{ ok: boolean }>
   authGetSession:   () => Promise<{ authenticated: boolean; user?: AuthUser; offline?: boolean; reason?: string }>
+  authGetAutoLogin:    () => Promise<boolean>
+  authSetAutoLogin:    (enabled: boolean) => Promise<{ ok: boolean }>
   authGetLocalAccounts: () => Promise<Array<{ id: string; email: string }>>
   authOfflineLogin:    (userId: string, password: string) => Promise<{ ok: boolean; user?: AuthUser; error?: string }>
   minimize:         () => void

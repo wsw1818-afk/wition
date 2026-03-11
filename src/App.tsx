@@ -14,11 +14,16 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(true)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
 
-  // 앱 시작 시 세션 확인
+  // 앱 시작 시: 자동 로그인 설정이 켜져있으면 세션 확인, 아니면 로그인 화면
   useEffect(() => {
-    window.api.authGetSession().then(session => {
-      if (session.authenticated && session.user) {
-        setAuthUser(session.user)
+    window.api.authGetAutoLogin().then(async (autoLogin) => {
+      if (autoLogin) {
+        try {
+          const session = await window.api.authGetSession()
+          if (session.authenticated && session.user) {
+            setAuthUser(session.user)
+          }
+        } catch { /* 세션 확인 실패 → 로그인 화면 */ }
       }
       setAuthChecking(false)
     }).catch(() => setAuthChecking(false))

@@ -22,9 +22,11 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [localAccounts, setLocalAccounts] = useState<LocalAccount[]>([])
   const [selectedAccount, setSelectedAccount] = useState<LocalAccount | null>(null)
   const [offlinePassword, setOfflinePassword] = useState('')
+  const [autoLogin, setAutoLogin] = useState(false)
 
-  // 저장된 로그인 정보 + 로컬 계정 목록 불러오기
+  // 저장된 로그인 정보 + 로컬 계정 목록 + 자동 로그인 설정 불러오기
   useEffect(() => {
+    window.api.authGetAutoLogin().then(setAutoLogin)
     window.api.authGetCredentials().then(res => {
       if (res.ok && res.email && res.password) {
         setEmail(res.email)
@@ -72,23 +74,53 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         return
       }
 
-      // 로그인
+      // 로그인 (온라인 시도 → 실패 시 로컬 폴백)
       const res = await window.api.authLogin(email.trim(), password)
-      if (!res.ok) {
-        setError(res.error || '로그인 실패')
+      if (res.ok && res.user) {
+        // 로그인 정보 기억 처리
+        if (rememberMe) {
+          await window.api.authSaveCredentials(email.trim(), password)
+        } else {
+          await window.api.authClearCredentials()
+        }
+        // 자동 로그인 설정 저장
+        await window.api.authSetAutoLogin(autoLogin)
+        onLogin(res.user)
         return
       }
 
-      // 로그인 정보 기억 처리
-      if (rememberMe) {
-        await window.api.authSaveCredentials(email.trim(), password)
-      } else {
-        await window.api.authClearCredentials()
+      // 온라인 실패 → 로컬 계정으로 폴백 시도
+      const localAccount = localAccounts.find(a => a.email === email.trim())
+      if (localAccount) {
+        const offRes = await window.api.authOfflineLogin(localAccount.id, password)
+        if (offRes.ok && offRes.user) {
+          if (rememberMe) await window.api.authSaveCredentials(email.trim(), password)
+          await window.api.authSetAutoLogin(autoLogin)
+          onLogin(offRes.user)
+          return
+        }
+        setError(offRes.error || '비밀번호가 일치하지 않습니다.')
+        return
       }
 
-      if (res.user) onLogin(res.user)
+      setError(res.error || '로그인 실패')
     } catch (err) {
-      setError(`오류: ${err}`)
+      // 서버 연결 불가 → 로컬 계정 폴백
+      const localAccount = localAccounts.find(a => a.email === email.trim())
+      if (localAccount) {
+        try {
+          const offRes = await window.api.authOfflineLogin(localAccount.id, password)
+          if (offRes.ok && offRes.user) {
+            if (rememberMe) await window.api.authSaveCredentials(email.trim(), password)
+            await window.api.authSetAutoLogin(autoLogin)
+            onLogin(offRes.user)
+            return
+          }
+          setError(offRes.error || '비밀번호가 일치하지 않습니다.')
+          return
+        } catch {}
+      }
+      setError(`서버 연결 실패. ${localAccounts.length > 0 ? '오프라인 로그인을 이용해주세요.' : '서버에 연결할 수 없습니다.'}`)
     } finally {
       setLoading(false)
     }
@@ -245,15 +277,26 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
                 </div>
 
                 {mode === 'login' && (
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={rememberMe}
-                      onChange={e => setRememberMe(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-500 focus:ring-blue-500/50 cursor-pointer"
-                    />
-                    <span className="text-xs text-gray-500 dark:text-gray-400">로그인 정보 기억</span>
-                  </label>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={e => setRememberMe(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-500 focus:ring-blue-500/50 cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-500 dark:text-gray-400">로그인 정보 기억</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={autoLogin}
+                        onChange={e => setAutoLogin(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-500 focus:ring-blue-500/50 cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-500 dark:text-gray-400">자동 로그인 (다음 실행 시 로그인 생략)</span>
+                    </label>
+                  </div>
                 )}
 
                 {mode === 'signup' && (

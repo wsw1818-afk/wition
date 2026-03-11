@@ -102,6 +102,8 @@ const api = {
   authSaveCredentials: (email: string, password: string) => ipcRenderer.invoke('auth:saveCredentials', email, password) as Promise<{ ok: boolean }>,
   authGetCredentials:  () => ipcRenderer.invoke('auth:getCredentials') as Promise<{ ok: boolean; email?: string; password?: string }>,
   authClearCredentials:() => ipcRenderer.invoke('auth:clearCredentials') as Promise<{ ok: boolean }>,
+  authGetAutoLogin:    () => ipcRenderer.invoke('auth:getAutoLogin') as Promise<boolean>,
+  authSetAutoLogin:    (enabled: boolean) => ipcRenderer.invoke('auth:setAutoLogin', enabled) as Promise<{ ok: boolean }>,
   authGetLocalAccounts:() => ipcRenderer.invoke('auth:getLocalAccounts') as Promise<Array<{ id: string; email: string }>>,
   authOfflineLogin:    (userId: string, password: string) => ipcRenderer.invoke('auth:offlineLogin', userId, password) as Promise<{ ok: boolean; user?: { id: string; email: string }; error?: string }>,
 
