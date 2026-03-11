@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import dayjs from 'dayjs'
 import { useCalendarStore } from '../../stores/calendarStore'
 import { MonthNavigator } from './MonthNavigator'
@@ -18,6 +18,41 @@ export function CalendarView() {
   const firstOfMonth = dayjs(currentMonth + '-01')
   const daysInMonth = firstOfMonth.daysInMonth()
   const startDow = firstOfMonth.day() // 0(일)~6(토)
+
+  // 컨텍스트 메뉴 상태
+  const [contextMenu, setContextMenu] = useState<{ dateStr: string; x: number; y: number } | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // 메뉴 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!contextMenu) return
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setContextMenu(null)
+        setConfirming(false)
+      }
+    }
+    window.addEventListener('mousedown', handler)
+    return () => window.removeEventListener('mousedown', handler)
+  }, [contextMenu])
+
+  const handleContextMenu = useCallback((dateStr: string, x: number, y: number) => {
+    setContextMenu({ dateStr, x, y })
+    setConfirming(false)
+  }, [])
+
+  const handleDeleteAll = async () => {
+    if (!contextMenu) return
+    if (!confirming) {
+      setConfirming(true)
+      return
+    }
+    await window.api.deleteAllItemsByDay(contextMenu.dateStr)
+    loadMonth(currentMonth)
+    setContextMenu(null)
+    setConfirming(false)
+  }
 
   // 이전 달 빈 칸 + 이번 달 날짜
   const cells: Array<{ day: number; dateStr: string; isCurrentMonth: boolean }> = []
@@ -41,6 +76,14 @@ export function CalendarView() {
   for (let d = 1; d <= remaining; d++) {
     cells.push({ day: d, dateStr: nextMonth.date(d).format('YYYY-MM-DD'), isCurrentMonth: false })
   }
+
+  // 컨텍스트 메뉴 위치 보정 (화면 밖으로 나가지 않게)
+  const menuStyle = contextMenu ? {
+    left: Math.min(contextMenu.x, window.innerWidth - 180),
+    top: Math.min(contextMenu.y, window.innerHeight - 100),
+  } : {}
+
+  const noteCount = contextMenu ? (dayMap[contextMenu.dateStr]?.note_count ?? 0) : 0
 
   return (
     <div className="flex flex-col h-full">
@@ -73,9 +116,41 @@ export function CalendarView() {
             holiday={holidayMap[c.dateStr]}
             hasAlarm={alarmDays.has(c.dateStr)}
             onClick={() => selectDate(c.dateStr)}
+            onContextMenu={handleContextMenu}
           />
         ))}
       </div>
+
+      {/* 우클릭 컨텍스트 메뉴 */}
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[160px]"
+          style={menuStyle}
+        >
+          <div className="px-3 py-1.5 text-xs text-gray-400 dark:text-gray-500 border-b border-gray-100 dark:border-gray-700">
+            {contextMenu.dateStr}
+          </div>
+          {noteCount === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">
+              메모가 없습니다
+            </div>
+          ) : (
+            <button
+              onClick={handleDeleteAll}
+              className={`w-full text-left px-3 py-2 text-sm transition-colors
+                ${confirming
+                  ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 font-medium'
+                  : 'text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                }`}
+            >
+              {confirming
+                ? `정말 삭제할까요? (${noteCount}개)`
+                : `메모 ${noteCount}개 전체 삭제`}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

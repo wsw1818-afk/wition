@@ -914,6 +914,17 @@ function registerIpcHandlers(): void {
     catch (err) { console.error('deleteNoteItem error:', err); return null }
   })
 
+  ipcMain.handle('db:deleteAllItemsByDay', (_e, dayId: string) => {
+    try {
+      const deleted = Q.deleteAllItemsByDay(db, dayId)
+      // 동기화: 개별 tombstone은 queries.ts에서 이미 기록됨, 서버에도 삭제 전파
+      Sync.syncDeleteAllByDay(dayId)
+      scheduleOneDriveExport()
+      return deleted
+    }
+    catch (err) { console.error('deleteAllItemsByDay error:', err); return 0 }
+  })
+
   ipcMain.handle('db:reorderNoteItems', (_e, dayId: string, orderedIds: string[]) => {
     try {
       Q.reorderNoteItems(db, dayId, orderedIds)

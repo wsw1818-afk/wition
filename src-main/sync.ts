@@ -1104,6 +1104,22 @@ export async function syncDeleteNoteItem(id: string): Promise<void> {
   }
 }
 
+/** 특정 날짜 메모 일괄 삭제 동기화 */
+export async function syncDeleteAllByDay(dayId: string): Promise<void> {
+  if (!supabase || !currentUserId) return
+  try {
+    const { error } = await supabase.from('note_item')
+      .delete()
+      .eq('day_id', dayId)
+      .eq('user_id', currentUserId)
+    if (error) {
+      slog(`[Sync] 일괄 삭제 실패 (${dayId}):`, error.message)
+    }
+  } catch (err) {
+    slog('[Sync] 일괄 삭제 동기화 실패:', err)
+  }
+}
+
 export async function syncAlarm(alarm: AlarmRow): Promise<void> {
   if (!supabase || !currentUserId) return
   try {

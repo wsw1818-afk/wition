@@ -19,7 +19,8 @@ const api = {
 
   // ── DB 쓰기 ──
   upsertNoteItem:   (item: unknown)                        => ipcRenderer.invoke('db:upsertNoteItem', item),
-  deleteNoteItem:   (id: string, dayId: string)            => ipcRenderer.invoke('db:deleteNoteItem', id, dayId),
+  deleteNoteItem:      (id: string, dayId: string)          => ipcRenderer.invoke('db:deleteNoteItem', id, dayId),
+  deleteAllItemsByDay: (dayId: string)                      => ipcRenderer.invoke('db:deleteAllItemsByDay', dayId),
   reorderNoteItems: (dayId: string, orderedIds: string[])  => ipcRenderer.invoke('db:reorderNoteItems', dayId, orderedIds),
   updateMood:       (dayId: string, mood: string | null)   => ipcRenderer.invoke('db:updateMood', dayId, mood),
 

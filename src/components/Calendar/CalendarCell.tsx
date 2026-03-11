@@ -11,10 +11,11 @@ interface Props {
   holiday?: string    // 공휴일 이름
   hasAlarm?: boolean  // 알람 존재 여부
   onClick: () => void
+  onContextMenu?: (dateStr: string, x: number, y: number) => void
 }
 
 export const CalendarCell = memo(function CalendarCell({
-  day, dateStr, noteDay, isToday, isSelected, isCurrentMonth, holiday, hasAlarm, onClick
+  day, dateStr, noteDay, isToday, isSelected, isCurrentMonth, holiday, hasAlarm, onClick, onContextMenu
 }: Props) {
   const count = noteDay?.note_count ?? 0
   const mood = noteDay?.mood
@@ -41,6 +42,7 @@ export const CalendarCell = memo(function CalendarCell({
   return (
     <button
       onClick={onClick}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(dateStr, e.clientX, e.clientY) } : undefined}
       title={tooltip}
       className={`
         relative flex flex-col items-center justify-start gap-0.5
@@ -103,5 +105,6 @@ export const CalendarCell = memo(function CalendarCell({
   prev.isCurrentMonth === next.isCurrentMonth &&
   prev.noteDay === next.noteDay &&
   prev.holiday === next.holiday &&
-  prev.hasAlarm === next.hasAlarm
+  prev.hasAlarm === next.hasAlarm &&
+  prev.onContextMenu === next.onContextMenu
 )

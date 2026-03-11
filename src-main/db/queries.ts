@@ -105,6 +105,21 @@ export function deleteNoteItem(db: Database.Database, id: string, dayId: string)
   return run()
 }
 
+/** 특정 날짜의 모든 NoteItem 일괄 삭제 + tombstone 기록 (트랜잭션) */
+export function deleteAllItemsByDay(db: Database.Database, dayId: string): number {
+  const now = Date.now()
+  const run = db.transaction(() => {
+    const items = db.prepare('SELECT id FROM note_item WHERE day_id = ?').all(dayId) as { id: string }[]
+    for (const item of items) {
+      addTombstone(db, 'note_item', item.id)
+    }
+    const result = db.prepare('DELETE FROM note_item WHERE day_id = ?').run(dayId)
+    refreshDayCache(db, dayId, now)
+    return result.changes
+  })
+  return run()
+}
+
 /** NoteItem 순서 변경 + updated_at 갱신 (트랜잭션) */
 export function reorderNoteItems(db: Database.Database, dayId: string, orderedIds: string[]): void {
   const now = Date.now()
