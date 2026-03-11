@@ -360,7 +360,9 @@ function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt 
       db.prepare('UPDATE note_day SET note_count = 0, has_notes = 0, summary = NULL, updated_at = ? WHERE id = ?').run(Date.now(), dayId)
     }
   } else if (preserveUpdatedAt) {
-    db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1 WHERE id = ?').run(row.cnt, dayId)
+    const first = db.prepare('SELECT content FROM note_item WHERE day_id = ? ORDER BY order_index ASC LIMIT 1').get(dayId) as { content: string } | undefined
+    const summary = first?.content?.replace(/\n/g, ' ').trim().slice(0, 80) ?? null
+    db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, summary = ? WHERE id = ?').run(row.cnt, summary, dayId)
   } else {
     db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, updated_at = ? WHERE id = ?').run(row.cnt, Date.now(), dayId)
   }
@@ -368,18 +370,29 @@ function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt 
 
 /** 로컬 note_day 캐시를 실제 note_item 기준으로 전체 재계산 (updated_at 변경 안 함 — push 핑퐁 방지) */
 function recalcAllDayCounts(db: Database.Database): void {
+  // 1) 기존 note_day 재계산
   const allDays = db.prepare('SELECT id, mood, note_count, updated_at FROM note_day').all() as Array<{ id: string; mood: string | null; note_count: number; updated_at: number }>
+  const processedDayIds = new Set<string>()
   for (const day of allDays) {
+    processedDayIds.add(day.id)
     const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day.id) as { cnt: number }
     if (row.cnt !== day.note_count) {
       if (row.cnt === 0 && !day.mood) {
         db.prepare('DELETE FROM note_day WHERE id = ?').run(day.id)
       } else {
-        // updated_at을 기존 값 유지 — 캐시 재계산은 로컬 전용이므로 서버 push 트리거 방지
         db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = CASE WHEN ? = 0 THEN NULL ELSE summary END WHERE id = ?')
           .run(row.cnt, row.cnt > 0 ? 1 : 0, row.cnt, day.id)
       }
     }
+  }
+  // 2) note_item은 있지만 note_day가 없는 날 생성 (동기화로 item만 들어온 경우)
+  const orphanDays = db.prepare('SELECT DISTINCT day_id FROM note_item WHERE day_id NOT IN (SELECT id FROM note_day)').all() as Array<{ day_id: string }>
+  for (const { day_id } of orphanDays) {
+    const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day_id) as { cnt: number }
+    db.prepare(`
+      INSERT INTO note_day (id, note_count, has_notes, updated_at)
+      VALUES (?, ?, 1, ?)
+    `).run(day_id, row.cnt, Date.now())
   }
 }
 
