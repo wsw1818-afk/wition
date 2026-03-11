@@ -69,7 +69,9 @@ export async function initSync(): Promise<boolean> {
   const urls = [
     process.env.VITE_SUPABASE_URL,
     'http://localhost:8000',
-  ].filter(Boolean) as string[]
+    'http://100.122.232.19:8000',
+    'http://192.168.45.152:8000',
+  ].filter((v, i, a) => v && a.indexOf(v) === i) as string[]
   const key = process.env.VITE_SUPABASE_ANON_KEY
   if (!urls.length || !key) {
     console.log('[Sync] Supabase 설정 없음 — OneDrive 전용 모드')

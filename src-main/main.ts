@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, Notification, net, safeStorage, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog, Tray, Menu, Notification, net, safeStorage, screen, nativeImage } from 'electron'
 import { join, basename, extname, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, copyFileSync, statSync, appendFileSync } from 'fs'
@@ -42,6 +42,7 @@ interface AppConfig {
   onedriveSyncPath?: string                 // OneDrive DB 동기화 경로
   onedriveSyncEnabled?: boolean             // OneDrive 자동 동기화 활성화
   closeToTray?: boolean                     // 닫기 시 트레이로 최소화
+  localAccounts?: Array<{ id: string; email: string; passwordEnc: string }>  // 오프라인 로그인용 로컬 계정
 }
 
 const CONFIG_FILE = join(app.getPath('userData'), 'config.json')
@@ -153,15 +154,90 @@ function ensureDataDir(): void {
   }
 }
 
-function openDatabase(): Database.Database {
+/** 사용자별 DB 파일명 반환 */
+function getDbFileName(userId?: string): string {
+  if (userId) return `wition_${userId.substring(0, 8)}.db`
+  return 'wition.db'
+}
+
+/** 기존 wition.db → 사용자별 DB로 마이그레이션 (최초 1회) */
+function migrateToUserDb(userId: string): void {
+  const oldPath = join(config.dataPath, 'wition.db')
+  const newPath = join(config.dataPath, getDbFileName(userId))
+  if (!existsSync(oldPath) || existsSync(newPath)) return
+  try {
+    // WAL checkpoint 후 이름 변경
+    const tempDb = new Database(oldPath)
+    tempDb.pragma('wal_checkpoint(TRUNCATE)')
+    tempDb.close()
+    copyFileSync(oldPath, newPath)
+    // WAL/SHM 파일도 처리
+    for (const ext of ['-wal', '-shm']) {
+      const f = oldPath + ext
+      if (existsSync(f)) try { unlinkSync(f) } catch {}
+    }
+    console.log(`[migrate-user-db] wition.db → ${getDbFileName(userId)}`)
+  } catch (err) {
+    console.error('[migrate-user-db] 실패:', err)
+  }
+}
+
+function openDatabase(userId?: string): Database.Database {
   ensureDataDir()
-  const dbPath = join(config.dataPath, 'wition.db')
+  const dbPath = join(config.dataPath, getDbFileName(userId))
   const database = new Database(dbPath)
   database.pragma('journal_mode = WAL')
   database.pragma('busy_timeout = 5000')
   database.pragma('foreign_keys = ON')
   initializeSchema(database)
+  console.log(`[DB] opened: ${dbPath}`)
   return database
+}
+
+/* ────────────────── DB 소유자 (owner_id) ───────────────────── */
+
+function getDbOwnerId(database: Database.Database): string | null {
+  try {
+    const row = database.prepare("SELECT value FROM app_meta WHERE key = 'owner_id'").get() as { value: string } | undefined
+    return row?.value ?? null
+  } catch { return null }
+}
+
+function setDbOwnerId(database: Database.Database, userId: string): void {
+  try {
+    database.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('owner_id', ?)").run(userId)
+  } catch (e) { console.error('[owner_id] 저장 실패:', e) }
+}
+
+/* ─────────────────── 오프라인 로그인용 로컬 계정 관리 ─────────────────── */
+
+function saveLocalAccount(userId: string, email: string, password: string): void {
+  if (!config.localAccounts) config.localAccounts = []
+  let passwordEnc: string
+  if (safeStorage.isEncryptionAvailable()) {
+    passwordEnc = safeStorage.encryptString(password).toString('base64')
+  } else {
+    passwordEnc = Buffer.from(password).toString('base64')
+  }
+  const idx = config.localAccounts.findIndex(a => a.id === userId)
+  if (idx >= 0) {
+    config.localAccounts[idx] = { id: userId, email, passwordEnc }
+  } else {
+    config.localAccounts.push({ id: userId, email, passwordEnc })
+  }
+  saveConfig(config)
+}
+
+function verifyLocalPassword(account: { passwordEnc: string }, password: string): boolean {
+  try {
+    let stored: string
+    if (safeStorage.isEncryptionAvailable()) {
+      stored = safeStorage.decryptString(Buffer.from(account.passwordEnc, 'base64'))
+    } else {
+      stored = Buffer.from(account.passwordEnc, 'base64').toString()
+    }
+    return stored === password
+  } catch { return false }
 }
 
 /* ─────────────────── 자동 백업 ─────────────────────────────── */
@@ -219,10 +295,11 @@ function stopAutoBackup(): void {
 let onedriveSyncTimer: ReturnType<typeof setInterval> | null = null
 let onedriveSyncDebounce: ReturnType<typeof setTimeout> | null = null
 
-/** OneDrive 동기화 경로의 DB 파일 경로 */
+/** OneDrive 동기화 경로의 DB 파일 경로 (사용자별) */
 function getOneDriveDbPath(): string | null {
   if (!config.onedriveSyncPath) return null
-  return join(config.onedriveSyncPath, 'wition.db')
+  const userId = config.authUser?.id
+  return join(config.onedriveSyncPath, getDbFileName(userId))
 }
 
 /** 양방향 동기화: OneDrive DB에서 병합 후, 로컬 DB를 OneDrive로 복사 */
@@ -230,7 +307,7 @@ function exportDbToOneDrive(): { ok: boolean; error?: string } {
   const remotePath = getOneDriveDbPath()
   if (!remotePath) return { ok: false, error: 'OneDrive 경로가 설정되지 않았습니다.' }
   try {
-    const localDbPath = join(config.dataPath, 'wition.db')
+    const localDbPath = join(config.dataPath, getDbFileName(config.authUser?.id))
     if (!existsSync(localDbPath)) return { ok: false, error: '로컬 DB가 없습니다.' }
     if (!existsSync(config.onedriveSyncPath!)) mkdirSync(config.onedriveSyncPath!, { recursive: true })
 
@@ -297,6 +374,15 @@ function mergeFromOneDrive(): { ok: boolean; merged: number; error?: string } {
   try {
     // OneDrive DB를 읽기 전용으로 열기
     remoteDb = new Database(remotePath, { readonly: true })
+
+    // 소유자 검증: OneDrive DB의 owner_id와 현재 로그인 사용자가 다르면 병합 거부
+    const remoteOwnerId = getDbOwnerId(remoteDb)
+    const currentUserId = config.authUser?.id
+    if (remoteOwnerId && currentUserId && remoteOwnerId !== currentUserId) {
+      console.warn(`[onedrive-sync] 소유자 불일치: DB=${remoteOwnerId}, 현재=${currentUserId} → 병합 거부`)
+      return { ok: false, merged: 0, error: '다른 사용자의 데이터입니다. 로그인 정보가 일치하지 않습니다.' }
+    }
+
     let merged = 0
 
     // note_item 병합: 양쪽 모두의 레코드를 보존, updated_at이 더 큰 쪽 우선
@@ -624,7 +710,15 @@ function getIconPath(): string {
 function createTray(): void {
   try {
     const iconPath = getIconPath()
-    tray = new Tray(iconPath)
+    console.log('[Tray] 아이콘 경로:', iconPath, '존재:', existsSync(iconPath))
+    // nativeImage로 로드하여 트레이 아이콘이 확실히 표시되도록
+    const icon = nativeImage.createFromPath(iconPath)
+    if (icon.isEmpty()) {
+      console.error('[Tray] 아이콘 로드 실패 — 빈 이미지')
+    }
+    // 트레이 아이콘 크기를 16x16으로 리사이즈 (Windows 트레이 권장 크기)
+    const trayIcon = icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 })
+    tray = new Tray(trayIcon)
     tray.setToolTip('Wition')
 
     const contextMenu = Menu.buildFromTemplate([
@@ -889,7 +983,7 @@ function registerIpcHandlers(): void {
     db.close()
     config.dataPath = newPath
     saveConfig(config)
-    db = openDatabase()
+    db = openDatabase(config.authUser?.id)
     return newPath
   })
 
@@ -1212,9 +1306,11 @@ function registerIpcHandlers(): void {
 
   // ── 인증 (GoTrue) ──
   const AUTH_URLS = [
-    process.env.VITE_SUPABASE_URL,       // Tailscale VPN IP (원격)
+    process.env.VITE_SUPABASE_URL,       // .env 설정값
     'http://localhost:8000',               // 로컬 (같은 PC)
-  ].filter(Boolean) as string[]
+    'http://100.122.232.19:8000',          // Tailscale VPN (원격 PC)
+    'http://192.168.45.152:8000',          // LAN (같은 네트워크)
+  ].filter((v, i, a) => v && a.indexOf(v) === i) as string[]
   let AUTH_BASE = AUTH_URLS[0]
   const AUTH_KEY = process.env.VITE_SUPABASE_ANON_KEY
 
@@ -1290,6 +1386,16 @@ function registerIpcHandlers(): void {
       config.authUser = { id: user.id, email: user.email }
       saveConfig(config)
 
+      // 사용자별 DB로 전환
+      try { db?.close() } catch {}
+      migrateToUserDb(user.id)
+      db = openDatabase(user.id)
+      setDbOwnerId(db, user.id)
+      Q.refreshAllSummaries(db)
+
+      // 로컬 계정 레지스트리에 저장 (오프라인 로그인용)
+      saveLocalAccount(user.id, user.email, password)
+
       // 동기화에 사용자 ID + GoTrue 세션 전달
       Sync.setUserId(user.id)
       await Sync.setAuthSession(token, refresh)
@@ -1314,6 +1420,9 @@ function registerIpcHandlers(): void {
     saveConfig(config)
     Sync.setUserId(null)
     await Sync.clearAuthSession()
+    // DB를 닫고 빈 임시 DB로 전환 (로그인 화면에서는 DB 불필요)
+    try { db?.close() } catch {}
+    db = openDatabase()  // userId 없이 → wition.db (로그인 전 임시)
     return { ok: true }
   })
 
@@ -1403,6 +1512,28 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
+  // ── 오프라인 로그인 ──
+  ipcMain.handle('auth:getLocalAccounts', () => {
+    return (config.localAccounts || []).map(a => ({ id: a.id, email: a.email }))
+  })
+
+  ipcMain.handle('auth:offlineLogin', (_e, userId: string, password: string) => {
+    const account = (config.localAccounts || []).find(a => a.id === userId)
+    if (!account) return { ok: false, error: '저장된 계정을 찾을 수 없습니다.' }
+    if (!verifyLocalPassword(account, password)) return { ok: false, error: '비밀번호가 일치하지 않습니다.' }
+
+    // 사용자별 DB로 전환
+    config.authUser = { id: account.id, email: account.email }
+    saveConfig(config)
+    try { db?.close() } catch {}
+    db = openDatabase(account.id)
+    setDbOwnerId(db, account.id)
+    Q.refreshAllSummaries(db)
+    Sync.setUserId(account.id)
+
+    return { ok: true, user: { id: account.id, email: account.email } }
+  })
+
   // ── OneDrive DB 동기화 ──
   ipcMain.handle('onedrive:getConfig', () => ({
     enabled: config.onedriveSyncEnabled ?? false,
@@ -1476,7 +1607,11 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  db = openDatabase()
+  const userId = config.authUser?.id
+  // 기존 wition.db → 사용자별 DB 마이그레이션 (최초 1회)
+  if (userId) migrateToUserDb(userId)
+  db = openDatabase(userId)
+  if (userId) setDbOwnerId(db, userId)
   oneDrivePullIfNewer()        // OneDrive DB가 더 최신이면 가져오기
   Q.refreshAllSummaries(db)   // summary 캐시 재계산 (마크다운 태그 제거 반영)
   registerIpcHandlers()
@@ -1502,14 +1637,26 @@ app.whenReady().then(() => {
         password = Buffer.from(config.savedPasswordEnc, 'base64').toString()
       }
       syncLog('[autoReLogin] 저장된 credentials로 재로그인 시도...')
-      // GoTrue 인증 API 직접 호출 (authFetch는 다른 스코프에 있으므로 net.fetch 사용)
-      const authBase = process.env.VITE_SUPABASE_URL || 'http://localhost:8000'
+      // GoTrue 인증 API 직접 호출 — 여러 URL 시도
+      const authUrls = [
+        process.env.VITE_SUPABASE_URL,
+        'http://localhost:8000',
+        'http://100.122.232.19:8000',
+        'http://192.168.45.152:8000',
+      ].filter((v, i, a) => v && a.indexOf(v) === i) as string[]
       const authKey = process.env.VITE_SUPABASE_ANON_KEY || ''
-      const fetchRes = await net.fetch(`${authBase}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': authKey },
-        body: JSON.stringify({ email: config.savedEmail, password })
-      })
+      let fetchRes: Response | null = null
+      for (const base of authUrls) {
+        try {
+          fetchRes = await net.fetch(`${base}/auth/v1/token?grant_type=password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': authKey },
+            body: JSON.stringify({ email: config.savedEmail, password })
+          })
+          if (fetchRes.status > 0) { syncLog(`[autoReLogin] 서버 연결: ${base}`); break }
+        } catch { fetchRes = null }
+      }
+      if (!fetchRes) { syncLog('[autoReLogin] 모든 서버 연결 실패'); return false }
       const text = await fetchRes.text()
       let data: Record<string, unknown>
       try { data = JSON.parse(text) } catch { data = {} }

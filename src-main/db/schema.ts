@@ -66,6 +66,13 @@ export function initializeSchema(db: Database.Database): void {
     )
   `)
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `)
+
   // 마이그레이션: alarm 테이블에 repeat 컬럼 추가 (기존 DB 호환)
   try {
     db.exec(`ALTER TABLE alarm ADD COLUMN repeat TEXT NOT NULL DEFAULT 'none'`)
