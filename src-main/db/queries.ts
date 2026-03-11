@@ -27,23 +27,29 @@ export interface NoteItemRow {
 /** 월 단위 NoteDay 조회 (달력 dot 표시용) — 실제 note_item 기준으로 count 보정 */
 export function getNoteDaysByMonth(db: Database.Database, yearMonth: string): NoteDayRow[] {
   const pattern = `${yearMonth}-%`
+  // note_day와 note_item 양쪽 모두에서 해당 월의 날짜를 수집
+  // note_day가 없지만 note_item이 있는 날도 포함 (동기화 후 캐시 불일치 방지)
   return db
     .prepare(`
-      SELECT d.*,
-        COALESCE(c.cnt, 0) as actual_count
-      FROM note_day d
+      SELECT
+        all_days.id,
+        d.mood,
+        d.summary,
+        COALESCE(c.cnt, 0) as note_count,
+        CASE WHEN COALESCE(c.cnt, 0) > 0 THEN 1 ELSE 0 END as has_notes,
+        COALESCE(d.updated_at, 0) as updated_at
+      FROM (
+        SELECT id FROM note_day WHERE id LIKE @p
+        UNION
+        SELECT DISTINCT day_id as id FROM note_item WHERE day_id LIKE @p
+      ) all_days
+      LEFT JOIN note_day d ON d.id = all_days.id
       LEFT JOIN (
         SELECT day_id, COUNT(*) as cnt FROM note_item GROUP BY day_id
-      ) c ON c.day_id = d.id
-      WHERE d.id LIKE ?
-      ORDER BY d.id
+      ) c ON c.day_id = all_days.id
+      ORDER BY all_days.id
     `)
-    .all(pattern)
-    .map((row: any) => ({
-      ...row,
-      note_count: row.actual_count,
-      has_notes: row.actual_count > 0 ? 1 : 0
-    })) as NoteDayRow[]
+    .all({ p: pattern }) as NoteDayRow[]
 }
 
 /** 단일 NoteDay 조회 */
