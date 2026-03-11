@@ -137,6 +137,20 @@ export function isSyncing(): boolean {
   return syncing
 }
 
+/** 테스트 전용: 오프라인 시뮬레이션 (supabase 인스턴스를 임시 null 처리) */
+let _savedSupabase: ReturnType<typeof import('@supabase/supabase-js').createClient> | null = null
+export function setOfflineForTest(offline: boolean): void {
+  if (offline) {
+    _savedSupabase = supabase
+    supabase = null
+    slog('[Sync] 테스트: 오프라인 모드 활성화')
+  } else {
+    if (_savedSupabase) supabase = _savedSupabase
+    _savedSupabase = null
+    slog('[Sync] 테스트: 온라인 모드 복구')
+  }
+}
+
 /* ────────────── Supabase Realtime (실시간 동기화) ────────────── */
 
 let realtimeRetryCount = 0
@@ -700,11 +714,12 @@ function cleanDeletedFromRemote(
     let deleted = 0
     const affectedDayIds = new Set<string>()
 
+    let protected_ = 0
     db.transaction(() => {
       for (const li of localItems) {
         if (!remoteItemIds.has(li.id)) {
           if (li.created_at > protectAfter || li.updated_at > protectAfter) {
-            slog(`[Sync] lastSyncAt 이후 생성/변경 아이템 보호 (삭제 스킵): ${li.id} created=${li.created_at} updated=${li.updated_at}`)
+            protected_++
             continue
           }
           db.prepare('DELETE FROM note_item WHERE id = ?').run(li.id)
@@ -713,6 +728,9 @@ function cleanDeletedFromRemote(
         }
       }
     })()
+    if (protected_ > 0) {
+      slog(`[Sync] lastSyncAt 이후 생성/변경 아이템 보호 (삭제 스킵): ${protected_}개`)
+    }
 
     if (deleted > 0) {
       slog(`[Sync] 원격에서 삭제된 로컬 아이템 ${deleted}개 정리`)
@@ -888,11 +906,9 @@ async function pushChanges(
     .filter(ld => {
       const ts = remoteDayMap.get(ld.id as string)
       if (ts === undefined) {
-        slog(`[Sync:push] day ${ld.id} NEW (서버에 없음 → push)`)
         return true
       }
       if ((ld.updated_at as number) > ts) {
-        slog(`[Sync:push] day ${ld.id} local_at=${ld.updated_at} remote_at=${ts}`)
         return true
       }
       return false
@@ -905,14 +921,12 @@ async function pushChanges(
         // 서버에 없는 아이템: created_at 또는 updated_at이 lastSyncAt 이후면 push
         // (OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각)
         if ((li.created_at as number) > protectAfter || (li.updated_at as number) > protectAfter) {
-          slog(`[Sync:push] item ${li.id} NEW (created=${li.created_at}, updated=${li.updated_at}, lastSync=${protectAfter})`)
           return true
         }
         // created_at과 updated_at 모두 lastSyncAt 이전 → 서버에서 삭제된 아이템
         return false
       }
       if ((li.updated_at as number) > ts) {
-        slog(`[Sync:push] item ${li.id} local_at=${li.updated_at} remote_at=${ts}`)
         return true
       }
       return false
@@ -1058,15 +1072,20 @@ export async function syncNoteDay(day: NoteDayRow): Promise<void> {
 }
 
 export async function syncNoteItem(item: NoteItemRow): Promise<void> {
-  if (!supabase || !currentUserId) return
+  if (!supabase || !currentUserId) {
+    slog(`[syncNoteItem] 스킵 — supabase=${!!supabase} userId=${currentUserId}`)
+    return
+  }
   try {
     const { error } = await supabase.from('note_item').upsert({ ...item, user_id: currentUserId }, { onConflict: 'id,user_id' })
     if (error) {
-      console.error('[Sync] note_item 동기화 실패:', error.message)
+      slog(`[syncNoteItem] 실패: ${error.message} (code=${error.code})`)
       enqueuePendingSync({ action: 'upsert', table: 'note_item', data: item as unknown as Record<string, unknown> })
+    } else {
+      slog(`[syncNoteItem] 성공: id=${item.id} day=${item.day_id}`)
     }
   } catch (err) {
-    console.error('[Sync] note_item 동기화 실패:', err)
+    slog(`[syncNoteItem] 예외: ${err}`)
     enqueuePendingSync({ action: 'upsert', table: 'note_item', data: item as unknown as Record<string, unknown> })
   }
 }

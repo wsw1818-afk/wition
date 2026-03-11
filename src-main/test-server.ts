@@ -194,6 +194,14 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     } else if (url === '/ping') {
       res.end(JSON.stringify({ ok: true, time: Date.now(), server: 'headless-test' }))
 
+    } else if (url === '/set-offline' && req.method === 'POST') {
+      Sync.setOfflineForTest(true)
+      res.end(JSON.stringify({ ok: true, offline: true }))
+
+    } else if (url === '/set-online' && req.method === 'POST') {
+      Sync.setOfflineForTest(false)
+      res.end(JSON.stringify({ ok: true, offline: false }))
+
     } else if (url === '/shutdown' && req.method === 'POST') {
       res.end(JSON.stringify({ ok: true, msg: 'shutting down' }))
       setTimeout(() => process.exit(0), 100)
