@@ -651,11 +651,7 @@ function applyPull(
     for (const rd of remoteDays) {
       const delAt = tombstoneMap.get(`note_day:${rd.id}`)
       if (delAt !== undefined) {
-        if (rd.updated_at > delAt) {
-          deleteTombstone.run('note_day', rd.id)
-        } else {
-          continue
-        }
+        continue  // tombstone이 있으면 무조건 skip
       }
       const local = selectDay.get(rd.id) as { updated_at: number } | undefined
       if (!local || rd.updated_at > local.updated_at) {
@@ -667,12 +663,10 @@ function applyPull(
     for (const ri of remoteItems) {
       const delAtItem = tombstoneMap.get(`note_item:${ri.id}`)
       if (delAtItem !== undefined) {
-        if (ri.updated_at > delAtItem) {
-          deleteTombstone.run('note_item', ri.id)
-        } else {
-          itemSkippedByTombstone++
-          continue
-        }
+        // tombstone이 있으면 무조건 skip (삭제 부활 방지)
+        // 재생성 케이스는 tombstone 60초 만료 후 자연스럽게 pull됨
+        itemSkippedByTombstone++
+        continue
       }
       const local = selectItem.get(ri.id) as { updated_at: number } | undefined
       if (!local) {
@@ -1109,6 +1103,11 @@ export async function syncNoteDay(day: NoteDayRow): Promise<void> {
 export async function syncNoteItem(item: NoteItemRow): Promise<void> {
   if (!supabase || !currentUserId) {
     slog(`[syncNoteItem] 스킵 — supabase=${!!supabase} userId=${currentUserId}`)
+    return
+  }
+  // tombstone에 있는 아이템이면 서버에 올리지 않음 (삭제된 메모 부활 방지)
+  if (realtimeDb && isTombstoned(realtimeDb, 'note_item', item.id as string)) {
+    slog(`[syncNoteItem] 스킵 (tombstone): id=${item.id}`)
     return
   }
   try {
