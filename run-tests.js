@@ -17,6 +17,7 @@ const ALL_TESTS = [
   'test_delete_resurrection.js',
   'test_cross_device.js',
   'test_three_way.js',
+  'test_mobile_to_pc.js',
   'test_db_features.js',
   // test_sync_auto.js — Realtime 테스트, 앱 실행 시만 가능 (npm run test:sync)
 ]

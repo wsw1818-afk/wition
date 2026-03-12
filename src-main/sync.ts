@@ -486,6 +486,21 @@ export async function quickPull(db: Database.Database): Promise<number> {
 let lastAuthCheckAt = 0
 const AUTH_CHECK_INTERVAL = 5 * 60 * 1000  // 5분마다만 서버 인증 확인
 
+/** 단건 sync 전 세션 유효성 확인 + 갱신 (RLS 무성 거부 방지) */
+async function ensureSession(): Promise<boolean> {
+  if (!supabase) return false
+  // 캐시: 마지막 확인에서 5분 이내면 유효로 간주
+  if (Date.now() - lastAuthCheckAt < AUTH_CHECK_INTERVAL) return true
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser()
+    if (!error && user) { lastAuthCheckAt = Date.now(); return true }
+    // 세션 갱신 시도
+    const { data: refData } = await supabase.auth.refreshSession()
+    if (refData?.session) { lastAuthCheckAt = Date.now(); return true }
+    return false
+  } catch { return false }
+}
+
 /**
  * 증분 동기화 (사용자별)
  */
@@ -1110,6 +1125,12 @@ export async function syncNoteItem(item: NoteItemRow): Promise<void> {
     slog(`[syncNoteItem] 스킵 (tombstone): id=${item.id}`)
     return
   }
+  // JWT 세션 유효성 확인 (만료 시 RLS가 조용히 거부)
+  if (!await ensureSession()) {
+    slog(`[syncNoteItem] 스킵: 세션 갱신 실패`)
+    enqueuePendingSync({ action: 'upsert', table: 'note_item', data: item as unknown as Record<string, unknown> })
+    return
+  }
   try {
     const { error } = await supabase.from('note_item').upsert({ ...item, user_id: currentUserId }, { onConflict: 'id,user_id' })
     if (error) {
@@ -1126,6 +1147,10 @@ export async function syncNoteItem(item: NoteItemRow): Promise<void> {
 
 export async function syncDeleteNoteItem(id: string): Promise<void> {
   if (!supabase || !currentUserId) return
+  if (!await ensureSession()) {
+    enqueuePendingSync({ action: 'delete', table: 'note_item', id })
+    return
+  }
   try {
     const { error } = await supabase.from('note_item').delete().eq('id', id).eq('user_id', currentUserId)
     if (error) {
@@ -1141,6 +1166,7 @@ export async function syncDeleteNoteItem(id: string): Promise<void> {
 /** 특정 날짜 메모 일괄 삭제 동기화 */
 export async function syncDeleteAllByDay(dayId: string): Promise<void> {
   if (!supabase || !currentUserId) return
+  if (!await ensureSession()) return
   try {
     const { error } = await supabase.from('note_item')
       .delete()
@@ -1156,6 +1182,10 @@ export async function syncDeleteAllByDay(dayId: string): Promise<void> {
 
 export async function syncAlarm(alarm: AlarmRow): Promise<void> {
   if (!supabase || !currentUserId) return
+  if (!await ensureSession()) {
+    enqueuePendingSync({ action: 'upsert', table: 'alarm', data: alarm as unknown as Record<string, unknown> })
+    return
+  }
   try {
     const { error } = await supabase.from('alarm').upsert({ ...alarm, user_id: currentUserId }, { onConflict: 'id,user_id' })
     if (error) {
@@ -1170,6 +1200,10 @@ export async function syncAlarm(alarm: AlarmRow): Promise<void> {
 
 export async function syncDeleteAlarm(id: string): Promise<void> {
   if (!supabase || !currentUserId) return
+  if (!await ensureSession()) {
+    enqueuePendingSync({ action: 'delete', table: 'alarm', id })
+    return
+  }
   try {
     const { error } = await supabase.from('alarm').delete().eq('id', id).eq('user_id', currentUserId)
     if (error) {
