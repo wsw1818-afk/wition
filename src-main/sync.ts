@@ -21,6 +21,7 @@ let currentUserId: string | null = null
 let realtimeChannel: ReturnType<SupabaseClient['channel']> | null = null
 let realtimeDb: Database.Database | null = null
 let onRealtimeChange: (() => void) | null = null
+let realtimeChangeTimer: ReturnType<typeof setTimeout> | null = null
 let _logFn: ((msg: string) => void) | null = null
 
 /** sync 내부 로그를 외부(main.ts의 syncLog)로 전달하는 설정 */
@@ -280,7 +281,11 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
       const oldRow = payload.old as Record<string, unknown>
       const id = oldRow.id as string
       if (!id) {
-        slog(`[Realtime] ${table} DELETE 이벤트에 id 없음 (replica identity 확인 필요): ${JSON.stringify(payload.old)}`)
+        slog(`[Realtime] ${table} DELETE 이벤트에 id 없음 (replica identity 확인 필요): ${JSON.stringify(payload.old)} — quickPull로 서버 상태 동기화 시도`)
+        // id 없이는 로컬 삭제 불가 → quickPull로 서버 전체 상태와 동기화
+        if (realtimeDb) {
+          quickPull(realtimeDb).catch(err => slog(`[Realtime] fallback quickPull 실패: ${err}`))
+        }
         return
       }
       const info = realtimeDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
@@ -304,8 +309,14 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
       slog(`[Realtime] ${table} ${eventType}: ${row.id}`)
     }
 
-    // UI 갱신 콜백
-    if (onRealtimeChange) onRealtimeChange()
+    // UI 갱신 콜백 (debounce 300ms: DELETE→INSERT 순서 역전 시 깜빡임 방지)
+    if (onRealtimeChange) {
+      if (realtimeChangeTimer) clearTimeout(realtimeChangeTimer)
+      realtimeChangeTimer = setTimeout(() => {
+        realtimeChangeTimer = null
+        if (onRealtimeChange) onRealtimeChange()
+      }, 300)
+    }
   } catch (err) {
     console.error(`[Realtime] ${table} 처리 실패:`, err)
   }
@@ -418,7 +429,7 @@ let lastQuickPullAt = 0
  * 반환: pulled 건수 (UI 갱신 필요 여부 판단용)
  */
 export async function quickPull(db: Database.Database): Promise<number> {
-  if (!supabase || quickPulling || !currentUserId) return 0
+  if (!supabase || quickPulling || syncing || !currentUserId) return 0
   quickPulling = true
   try {
     const since = lastQuickPullAt || (Date.now() - 10000) // 최초는 10초 전부터
@@ -727,15 +738,23 @@ function cleanDeletedFromRemote(
     let deleted = 0
     const affectedDayIds = new Set<string>()
 
+    // tombstone에 이미 있는 아이템은 "다른 기기에서 삭제 확인됨" → 보호 대상에서 제외
+    const tombstones = getTombstones(db)
+    const tombstoneSet = new Set(tombstones.map(t => `${t.table_name}:${t.item_id}`))
+
     let protected_ = 0
     db.transaction(() => {
       for (const li of localItems) {
         if (!remoteItemIds.has(li.id)) {
-          if (li.created_at > protectAfter || li.updated_at > protectAfter) {
+          // tombstone에 있으면 이미 삭제 확인됨 → 무조건 삭제
+          const hasTombstone = tombstoneSet.has(`note_item:${li.id}`)
+          if (!hasTombstone && (li.created_at > protectAfter || li.updated_at > protectAfter)) {
             protected_++
             continue
           }
           db.prepare('DELETE FROM note_item WHERE id = ?').run(li.id)
+          // tombstone 등록: pushChanges에서 서버에 다시 올리는 것 방지
+          if (!hasTombstone) addTombstone(db, 'note_item', li.id)
           affectedDayIds.add(li.day_id)
           deleted++
         }
@@ -989,7 +1008,10 @@ async function pushChanges(
         .eq('user_id', currentUserId)
         .lt('updated_at', item.updated_at as number)
       if (!error) pushed++
-      else console.error(`[Sync] ${table} update 실패:`, error.message)
+      else {
+        slog(`[Sync] ${table} update 실패 (id=${item.id}): ${error.message} — pendingSyncQueue에 추가`)
+        pendingSyncQueue.push({ action: 'upsert', table, data: item })
+      }
     }
 
     return pushed

@@ -51,7 +51,17 @@ interface AppConfig {
 const PORTABLE_DIR = process.env.PORTABLE_EXECUTABLE_DIR
   ? join(process.env.PORTABLE_EXECUTABLE_DIR, 'WitionData')
   : null
-const CONFIG_BASE = PORTABLE_DIR || app.getPath('userData')
+// app.getPath()가 패키징된 빌드 모듈 로드 시점에 실패할 수 있으므로 fallback 추가
+function getConfigBase(): string {
+  if (PORTABLE_DIR) return PORTABLE_DIR
+  try {
+    return app.getPath('userData')
+  } catch {
+    // fallback: AppData/Roaming/Wition (Windows)
+    return join(process.env.APPDATA || process.env.HOME || '.', 'Wition')
+  }
+}
+const CONFIG_BASE = getConfigBase()
 if (PORTABLE_DIR && !existsSync(CONFIG_BASE)) mkdirSync(CONFIG_BASE, { recursive: true })
 const CONFIG_FILE = join(CONFIG_BASE, 'config.json')
 
@@ -578,6 +588,27 @@ let healthCheckInterval: ReturnType<typeof setInterval> | null = null
 let testHttpServer: ReturnType<typeof createServer> | null = null
 
 let lastResetDate = ''
+
+/* ── sync:done debounce (300ms 내 중복 방지) ── */
+let syncDoneTimer: ReturnType<typeof setTimeout> | null = null
+function sendSyncDone(): void {
+  if (syncDoneTimer) clearTimeout(syncDoneTimer)
+  syncDoneTimer = setTimeout(() => {
+    syncDoneTimer = null
+    BrowserWindow.getAllWindows().forEach(w => {
+      if (!w.isDestroyed()) {
+        w.webContents.send('sync:done')
+        // IPC가 안 먹힐 때를 대비: executeJavaScript로 직접 window 이벤트 발생
+        w.webContents.executeJavaScript(`
+          (() => {
+            const e = new Event('sync-refresh');
+            window.dispatchEvent(e);
+          })()
+        `).catch(() => {})
+      }
+    })
+  }, 300)
+}
 
 function checkAlarms(): void {
   if (!db) return
@@ -1307,7 +1338,7 @@ function registerIpcHandlers(): void {
       await Sync.pushAttachmentFiles(attachDir)
 
       if (pulled > 0 || pushed > 0 || cleaned > 0) {
-        BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+        sendSyncDone()
       }
       return { ok: true, pulled, pushed, cleaned }
     } catch (err) {
@@ -1750,7 +1781,7 @@ app.whenReady().then(() => {
             saveConfig(config)
           }
           if (retry.pulled > 0 || retry.pushed > 0 || retry.cleaned > 0) {
-            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+            sendSyncDone()
           }
           broadcastSyncStatus('online')
           return
@@ -1776,7 +1807,7 @@ app.whenReady().then(() => {
       }
       broadcastSyncStatus('online')
       if (pulled > 0 || pushed > 0 || cleaned > 0 || filePulled > 0) {
-        BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+        sendSyncDone()
       }
     } catch (err) {
       syncLog(`fullSync 실패: ${err}`)
@@ -1825,26 +1856,8 @@ app.whenReady().then(() => {
           if (uid && db) {
             syncLog(`[Realtime] userId=${uid} — 실시간 구독 시작`)
             Sync.startRealtime(db, () => {
-              const wins = BrowserWindow.getAllWindows()
-              syncLog(`[Realtime] 변경 감지 → UI 갱신 (windows=${wins.length})`)
-              wins.forEach(w => {
-                if (!w.isDestroyed()) {
-                  const wc = w.webContents
-                  syncLog(`[Realtime] sync:done 전송 (win=${w.id}, loading=${wc.isLoading()})`)
-                  wc.send('sync:done')
-                  // IPC가 안 먹힐 때를 대비: executeJavaScript로 직접 window 이벤트 발생
-                  wc.executeJavaScript(`
-                    (() => {
-                      const e = new Event('sync-refresh');
-                      const dispatched = window.dispatchEvent(e);
-                      const dayId = window.__dayStore_dayId || 'unknown';
-                      return 'dispatched=' + dispatched + ',dayId=' + dayId;
-                    })()
-                  `)
-                    .then(r => syncLog(`[Realtime] sync-refresh 결과: ${r} (win=${w.id})`))
-                    .catch(e => syncLog(`[Realtime] sync-refresh 발송 실패: ${e.message}`))
-                }
-              })
+              syncLog(`[Realtime] 변경 감지 → UI 갱신 (debounced sendSyncDone)`)
+              sendSyncDone()
             })
           } else {
             syncLog(`[Realtime] userId 없음 — 1초 후 재시도`)
@@ -1860,7 +1873,7 @@ app.whenReady().then(() => {
         try {
           const pulled = await Sync.quickPull(db)
           if (pulled > 0) {
-            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+            sendSyncDone()
           }
         } catch {}
       }, 5000)
@@ -1906,7 +1919,7 @@ app.whenReady().then(() => {
           const { pulled, pushed, cleaned, syncedAt } = await Sync.fullSync(db!, config.lastSyncAt)
           if (syncedAt > 0) { config.lastSyncAt = syncedAt; saveConfig(config) }
           if (pulled > 0 || pushed > 0 || cleaned > 0) {
-            BrowserWindow.getAllWindows().forEach(w => w.webContents.send('sync:done'))
+            sendSyncDone()
           }
           res.end(JSON.stringify({ ok: true, pulled, pushed, cleaned }))
         } else if (url.startsWith('/query') && req.method === 'GET') {

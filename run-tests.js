@@ -8,8 +8,11 @@
  */
 const { spawn, execSync } = require('child_process')
 const http = require('http')
+const path = require('path')
 
 const TEST_PORT = 19876
+// wition_build/node_modules를 공유 (dotenv, @supabase 등)
+const EXTRA_NODE_PATH = path.resolve(__dirname, 'wition_build', 'node_modules')
 const ALL_TESTS = [
   'test_delete_resurrection.js',
   'test_cross_device.js',
@@ -58,7 +61,7 @@ function runTest(file) {
     const child = spawn('node', [file], {
       stdio: 'inherit',
       cwd: process.cwd(),
-      env: { ...process.env, TEST_PC_URL: `http://localhost:${TEST_PORT}` }
+      env: { ...process.env, TEST_PC_URL: `http://localhost:${TEST_PORT}`, NODE_PATH: EXTRA_NODE_PATH }
     })
     child.on('close', (code) => resolve(code))
     child.on('error', (err) => { console.error(err); resolve(1) })
@@ -91,7 +94,7 @@ async function main() {
     // 2) 테스트 서버 빌드 + 시작
     console.log('[Runner] 테스트 서버 빌드 중...')
     try {
-      execSync('node build-test-server.js', { stdio: 'pipe' })
+      execSync('node build-test-server.js', { stdio: 'pipe', env: { ...process.env, NODE_PATH: EXTRA_NODE_PATH } })
     } catch (err) {
       console.error('[Runner] 빌드 실패:', err.stderr?.toString())
       process.exit(1)
@@ -100,7 +103,7 @@ async function main() {
     console.log('[Runner] Headless 테스트 서버 시작 중...')
     serverProc = spawn('node', ['dist-electron/test-server.js'], {
       stdio: 'pipe',
-      env: { ...process.env, TEST_PORT: String(TEST_PORT) }
+      env: { ...process.env, TEST_PORT: String(TEST_PORT), NODE_PATH: EXTRA_NODE_PATH }
     })
     serverProc.stdout.on('data', d => process.stdout.write(`[Server] ${d}`))
     serverProc.stderr.on('data', d => process.stderr.write(`[Server] ${d}`))

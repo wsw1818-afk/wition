@@ -13,6 +13,7 @@ build({
   format: 'cjs',
   // better-sqlite3를 외부 모듈로 유지하되, test-deps에서 resolve
   external: ['better-sqlite3', 'ws', 'bufferutil', 'utf-8-validate'],
+  nodePaths: [path.resolve(__dirname, 'wition_build', 'node_modules')],
   define: {
     'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL ?? ''),
     'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY ?? ''),
