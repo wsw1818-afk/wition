@@ -365,7 +365,30 @@ function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<s
   }
 }
 
-/** note_item 변경 시 해당 day의 note_count/has_notes 갱신 */
+/** 첫 번째 아이템에서 summary 텍스트 추출 */
+function extractSummary(db: Database.Database, dayId: string): string | null {
+  const first = db.prepare(
+    'SELECT content, type FROM note_item WHERE day_id = ? ORDER BY order_index ASC LIMIT 1'
+  ).get(dayId) as { content: string; type: string } | undefined
+  if (!first?.content) return null
+  if (first.type === 'checklist') {
+    try {
+      const items = JSON.parse(first.content) as Array<{ text: string }>
+      return items.map(i => i.text).join(', ').slice(0, 80) || null
+    } catch { return null }
+  }
+  return first.content
+    .replace(/\[file:.+?\]/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\n/g, ' ')
+    .trim()
+    .slice(0, 80) || null
+}
+
+/** note_item 변경 시 해당 day의 note_count/has_notes/summary 갱신 */
 function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt = false): void {
   const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(dayId) as { cnt: number }
   if (row.cnt === 0) {
@@ -377,12 +400,13 @@ function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt 
     } else {
       db.prepare('UPDATE note_day SET note_count = 0, has_notes = 0, summary = NULL, updated_at = ? WHERE id = ?').run(Date.now(), dayId)
     }
-  } else if (preserveUpdatedAt) {
-    const first = db.prepare('SELECT content FROM note_item WHERE day_id = ? ORDER BY order_index ASC LIMIT 1').get(dayId) as { content: string } | undefined
-    const summary = first?.content?.replace(/\n/g, ' ').trim().slice(0, 80) ?? null
-    db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, summary = ? WHERE id = ?').run(row.cnt, summary, dayId)
   } else {
-    db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, updated_at = ? WHERE id = ?').run(row.cnt, Date.now(), dayId)
+    const summary = extractSummary(db, dayId)
+    if (preserveUpdatedAt) {
+      db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, summary = ? WHERE id = ?').run(row.cnt, summary, dayId)
+    } else {
+      db.prepare('UPDATE note_day SET note_count = ?, has_notes = 1, summary = ?, updated_at = ? WHERE id = ?').run(row.cnt, summary, Date.now(), dayId)
+    }
   }
 }
 
@@ -394,23 +418,23 @@ function recalcAllDayCounts(db: Database.Database): void {
   for (const day of allDays) {
     processedDayIds.add(day.id)
     const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day.id) as { cnt: number }
-    if (row.cnt !== day.note_count) {
-      if (row.cnt === 0 && !day.mood) {
-        db.prepare('DELETE FROM note_day WHERE id = ?').run(day.id)
-      } else {
-        db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = CASE WHEN ? = 0 THEN NULL ELSE summary END WHERE id = ?')
-          .run(row.cnt, row.cnt > 0 ? 1 : 0, row.cnt, day.id)
-      }
+    if (row.cnt === 0 && !day.mood) {
+      db.prepare('DELETE FROM note_day WHERE id = ?').run(day.id)
+    } else if (row.cnt !== day.note_count || (row.cnt > 0 && !(db.prepare('SELECT summary FROM note_day WHERE id = ?').get(day.id) as { summary: string | null } | undefined)?.summary)) {
+      const summary = row.cnt > 0 ? extractSummary(db, day.id) : null
+      db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = ? WHERE id = ?')
+        .run(row.cnt, row.cnt > 0 ? 1 : 0, summary, day.id)
     }
   }
   // 2) note_item은 있지만 note_day가 없는 날 생성 (동기화로 item만 들어온 경우)
   const orphanDays = db.prepare('SELECT DISTINCT day_id FROM note_item WHERE day_id NOT IN (SELECT id FROM note_day)').all() as Array<{ day_id: string }>
   for (const { day_id } of orphanDays) {
     const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day_id) as { cnt: number }
+    const summary = extractSummary(db, day_id)
     db.prepare(`
-      INSERT INTO note_day (id, note_count, has_notes, updated_at)
-      VALUES (?, ?, 1, ?)
-    `).run(day_id, row.cnt, Date.now())
+      INSERT INTO note_day (id, note_count, has_notes, summary, updated_at)
+      VALUES (?, ?, 1, ?, ?)
+    `).run(day_id, row.cnt, summary, Date.now())
   }
 }
 
@@ -442,7 +466,7 @@ export async function quickPull(db: Database.Database): Promise<number> {
     const since = lastQuickPullAt || (Date.now() - 10000) // 최초는 10초 전부터
     const now = Date.now()
 
-    // note_item 변경분 조회 (추가/수정 감지 — 삭제는 fullSync 3초 간격에서 처리)
+    // note_item 변경분 조회 (추가/수정 감지 — 삭제는 fullSync에서 처리)
     const { data: items, error: e2 } = await supabase.from('note_item').select('*').eq('user_id', currentUserId).gt('updated_at', since)
 
     if (e2) return 0
@@ -583,14 +607,23 @@ export async function fullSync(
     }
 
     // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제 (pull 전에 실행하여 UI 깜빡임 방지)
-    // 단, 서버 데이터가 충분히 있을 때만 실행 (0건이면 인증/네트워크 문제 가능)
-    let cleaned = 0
-    if (authenticated && remoteItems.length > 0) {
-      cleaned = cleanDeletedFromRemote(db, remoteDays, remoteItems, lastSyncAt)
-    }
-
     let pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
     if (pulled > 0) slog(`[Sync] pulled ${pulled}건`)
+
+    // Push 먼저: 로컬 새 데이터를 원격에 반영 (clean 전에 push해야 오프라인 메모가 삭제되지 않음)
+    const pushed = await pushChanges(db, lastSyncAt, remoteDays, remoteItems, remoteAlarms)
+
+    // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제
+    // push 후 실행하므로 오프라인 작성 메모는 이미 서버에 올라간 상태
+    let cleaned = 0
+    if (authenticated && remoteItems.length > 0) {
+      // push로 새로 올린 데이터를 포함하여 서버 상태 재조회
+      const [{ data: freshDaysData }, { data: freshItemsData }] = await Promise.all([
+        supabase.from('note_day').select('*').eq('user_id', currentUserId),
+        supabase.from('note_item').select('*').eq('user_id', currentUserId)
+      ])
+      cleaned = cleanDeletedFromRemote(db, (freshDaysData ?? remoteDays) as NoteDayRow[], (freshItemsData ?? remoteItems) as NoteItemRow[], lastSyncAt)
+    }
 
     // 서버 note_day 캐시 정합성 수정 (모바일이 item 삭제 시 day count를 안 바꾸는 문제 보정)
     if (authenticated) {
@@ -599,10 +632,6 @@ export async function fullSync(
 
     // note_day 캐시를 실제 note_item 기준으로 재계산 (원격과 불일치 방지)
     recalcAllDayCounts(db)
-
-    // Push: 로컬 새 데이터를 원격에 반영 (cleanDeleted 후 실행하여 삭제된 아이템 재업로드 방지)
-    // pull에서 이미 조회한 remote 데이터를 재사용 → 서버 재조회 제거 (성능 개선)
-    const pushed = await pushChanges(db, lastSyncAt, remoteDays, remoteItems, remoteAlarms)
 
     slog(`[Sync] 완료: pulled=${pulled}, pushed=${pushed}, cleaned=${cleaned}, tombstones=${tombstoneCount} (${Date.now() - start}ms)`)
     // fullSync 완료 후 quickPull 기준점 갱신 (push가 변경한 데이터를 다시 pull하지 않도록)
@@ -797,7 +826,7 @@ function cleanDeletedFromRemote(
 async function fixRemoteDayCounts(remoteDays: NoteDayRow[], remoteItems: NoteItemRow[]): Promise<void> {
   if (!supabase || !currentUserId) return
   try {
-    // 실제 item 수 계산
+    // 실제 item 수 계산 (Supabase에는 deleted_at 없음 — 삭제된 아이템은 물리 삭제됨)
     const countByDay = new Map<string, number>()
     for (const item of remoteItems) {
       countByDay.set(item.day_id as string, (countByDay.get(item.day_id as string) || 0) + 1)
