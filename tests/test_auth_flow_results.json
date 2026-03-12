@@ -1,0 +1,102 @@
+{
+  "passed": 19,
+  "failed": 0,
+  "total": 19,
+  "results": [
+    {
+      "name": "G01. 회원가입 + 자동 이메일 확인",
+      "status": "PASS",
+      "ms": 99
+    },
+    {
+      "name": "G02. 비밀번호 로그인 → 토큰 발급",
+      "status": "PASS",
+      "ms": 67
+    },
+    {
+      "name": "G03. 토큰으로 getUser 성공",
+      "status": "PASS",
+      "ms": 14
+    },
+    {
+      "name": "G04. 리프레시 토큰으로 세션 갱신",
+      "status": "PASS",
+      "ms": 16
+    },
+    {
+      "name": "G05. 잘못된 비밀번호 → 로그인 거부",
+      "status": "PASS",
+      "ms": 50
+    },
+    {
+      "name": "G06. 존재하지 않는 계정 → 로그인 거부",
+      "status": "PASS",
+      "ms": 5
+    },
+    {
+      "name": "H01. 사용자별 데이터 격리 — 다른 사용자 데이터 안보임",
+      "status": "PASS",
+      "ms": 76
+    },
+    {
+      "name": "H02. service_role은 모든 데이터 접근 가능",
+      "status": "PASS",
+      "ms": 4
+    },
+    {
+      "name": "H03. 인증 없이 데이터 접근 불가",
+      "status": "PASS",
+      "ms": 4
+    },
+    {
+      "name": "I01. 인증된 세션으로 데이터 CRUD → 로컬 DB 반영",
+      "status": "PASS",
+      "ms": 22
+    },
+    {
+      "name": "I02. 만료된 토큰 → refresh → 동기화 계속",
+      "status": "PASS",
+      "ms": 82
+    },
+    {
+      "name": "I03. 동시 세션 — 두 기기에서 같은 계정 로그인",
+      "status": "PASS",
+      "ms": 115
+    },
+    {
+      "name": "I04. 로그아웃 후 데이터 접근 불가",
+      "status": "PASS",
+      "ms": 65
+    },
+    {
+      "name": "I05. 오프라인 → 온라인 복구 시 토큰 갱신 시뮬레이션",
+      "status": "PASS",
+      "ms": 69
+    },
+    {
+      "name": "J01. UUID 충돌 — 같은 ID로 두 사용자가 데이터 생성",
+      "status": "PASS",
+      "ms": 16
+    },
+    {
+      "name": "J02. 타임스탬프 극단값 — epoch 0, 미래 날짜",
+      "status": "PASS",
+      "ms": 21
+    },
+    {
+      "name": "J03. 빈 content, null-like 값 처리",
+      "status": "PASS",
+      "ms": 36
+    },
+    {
+      "name": "J04. 매우 긴 content (100KB)",
+      "status": "PASS",
+      "ms": 60
+    },
+    {
+      "name": "J05. 동시 upsert 경쟁 — 10개 동시 업데이트",
+      "status": "PASS",
+      "ms": 41
+    }
+  ]
+}

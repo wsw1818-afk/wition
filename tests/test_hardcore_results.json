@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-03-12T05:36:32.470Z",
+  "results": {
+    "대량 INSERT": {
+      "pass": true,
+      "count": 590,
+      "sec": "0.3"
+    },
+    "PC 반영": {
+      "pass": true,
+      "count": 590,
+      "sec": "3.5"
+    },
+    "서버 DELETE": {
+      "pass": true,
+      "sec": "0.1"
+    },
+    "Realtime 삭제": {
+      "itemsRemain": 0,
+      "daysRemain": 0
+    },
+    "잔상 검증": {
+      "pass": true,
+      "ghostDays": 0,
+      "realDays": 0
+    },
+    "Race condition": {
+      "pass": true,
+      "items": 0,
+      "ghosts": 0
+    }
+  },
+  "passed": 11,
+  "total": 11
+}

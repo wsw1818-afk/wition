@@ -1,0 +1,108 @@
+{
+  "date": "2026-03-12T04:38:38.944Z",
+  "pass": 20,
+  "fail": 0,
+  "total": 20,
+  "results": [
+    {
+      "name": "01. LWW: PC newer wins",
+      "status": "PASS",
+      "ms": 1114
+    },
+    {
+      "name": "02. LWW: 모바일 newer wins",
+      "status": "PASS",
+      "ms": 1072
+    },
+    {
+      "name": "03. 모바일 삭제 → PC count 정합",
+      "status": "PASS",
+      "ms": 1095
+    },
+    {
+      "name": "04. PC reorder → 서버 순서 일치",
+      "status": "PASS",
+      "ms": 1097
+    },
+    {
+      "name": "05. 양쪽 동시 추가 merge",
+      "status": "PASS",
+      "ms": 552
+    },
+    {
+      "name": "06. PC 삭제 → tombstone push",
+      "status": "PASS",
+      "ms": 1072
+    },
+    {
+      "name": "07. mood 양쪽 LWW",
+      "status": "PASS",
+      "ms": 1083
+    },
+    {
+      "name": "08. alarm 양방향 동기화",
+      "status": "PASS",
+      "ms": 1068
+    },
+    {
+      "name": "09. 대량 100개 배치 push",
+      "status": "PASS",
+      "ms": 2146
+    },
+    {
+      "name": "10. checklist 항목 토글",
+      "status": "PASS",
+      "ms": 1076
+    },
+    {
+      "name": "11. 첨부파일 메타 보존",
+      "status": "PASS",
+      "ms": 537
+    },
+    {
+      "name": "12. 빈 day 서버 정리",
+      "status": "PASS",
+      "ms": 2621
+    },
+    {
+      "name": "13. preserveUpdatedAt 핑퐁 방지",
+      "status": "PASS",
+      "ms": 3103
+    },
+    {
+      "name": "14. 양방향 핑퐁 5회",
+      "status": "PASS",
+      "ms": 2021
+    },
+    {
+      "name": "15. 혼합 블록+알람 day",
+      "status": "PASS",
+      "ms": 1072
+    },
+    {
+      "name": "16. SQL 인젝션 방어",
+      "status": "PASS",
+      "ms": 548
+    },
+    {
+      "name": "17. 오프라인 추가 보호",
+      "status": "PASS",
+      "ms": 1044
+    },
+    {
+      "name": "18. 0건 pull 보호 구조",
+      "status": "PASS",
+      "ms": 551
+    },
+    {
+      "name": "19. 대용량 유니코드+이모지",
+      "status": "PASS",
+      "ms": 1047
+    },
+    {
+      "name": "20. 최종 3자 정합성",
+      "status": "PASS",
+      "ms": 1537
+    }
+  ]
+}

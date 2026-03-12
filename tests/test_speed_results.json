@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-03-12T06:04:10.939Z",
+  "results": {
+    "01: INSERT 지연": {
+      "min": 203,
+      "max": 219,
+      "avg": 211,
+      "median": 211,
+      "p90": 218,
+      "stddev": 5,
+      "count": 30,
+      "timeouts": 0
+    },
+    "02: UPDATE 지연": {
+      "min": 203,
+      "max": 218,
+      "avg": 210,
+      "median": 210,
+      "p90": 217,
+      "stddev": 4,
+      "count": 30,
+      "timeouts": 0
+    },
+    "03: DELETE 지연": {
+      "min": 204,
+      "max": 218,
+      "avg": 211,
+      "median": 211,
+      "p90": 217,
+      "stddev": 4,
+      "count": 30,
+      "timeouts": 0
+    },
+    "04: burst INSERT": {
+      "min": 1,
+      "max": 205,
+      "avg": 14,
+      "median": 1,
+      "p90": 1,
+      "stddev": 49,
+      "count": 16,
+      "arrived": 16,
+      "missed": 0,
+      "totalMs": 304
+    },
+    "05: burst DELETE": {
+      "min": 1,
+      "max": 208,
+      "avg": 13,
+      "median": 1,
+      "p90": 1,
+      "stddev": 49,
+      "count": 17,
+      "deleted": 17,
+      "missed": 0,
+      "totalMs": 309
+    },
+    "06: INSERT→DELETE race": {
+      "pass": true,
+      "remaining": 0
+    },
+    "07: bulk 100개": {
+      "arrived": 100,
+      "totalMs": 1032,
+      "insertMs": 15
+    },
+    "08: 1초간격 편차": {
+      "min": 204,
+      "max": 218,
+      "avg": 210,
+      "median": 208,
+      "p90": 218,
+      "stddev": 5,
+      "count": 10,
+      "variationPct": 2
+    }
+  },
+  "passed": 13,
+  "total": 15
+}

@@ -1,0 +1,58 @@
+{
+  "date": "2026-03-12T04:38:13.274Z",
+  "pass": 10,
+  "fail": 0,
+  "total": 10,
+  "results": [
+    {
+      "name": "01. 단건 삭제 + 2차 sync 부활 방지",
+      "status": "PASS",
+      "ms": 1202
+    },
+    {
+      "name": "02. 10개 연속 삭제 + 부활 방지",
+      "status": "PASS",
+      "ms": 1488
+    },
+    {
+      "name": "03. 50개 대량 삭제 안정성",
+      "status": "PASS",
+      "ms": 2549
+    },
+    {
+      "name": "04. 삭제→생성→sync (새 아이템만 남기)",
+      "status": "PASS",
+      "ms": 881
+    },
+    {
+      "name": "05. 모바일 삭제 → PC sync → 로컬+서버 정리",
+      "status": "PASS",
+      "ms": 1202
+    },
+    {
+      "name": "06. 빠른 연속 (1개씩 삭제+sync 반복)",
+      "status": "PASS",
+      "ms": 2219
+    },
+    {
+      "name": "07. 삭제 중 background sync 레이스",
+      "status": "PASS",
+      "ms": 1207
+    },
+    {
+      "name": "08. tombstone 만료 후 부활 안전성",
+      "status": "PASS",
+      "ms": 1018
+    },
+    {
+      "name": "09. 100개 대량 삭제 + 3회 sync 정합성",
+      "status": "PASS",
+      "ms": 3421
+    },
+    {
+      "name": "10. 삭제+수정 혼합 (5삭제+5수정)",
+      "status": "PASS",
+      "ms": 1127
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-03-12T05:40:57.136Z",
+  "results": {
+    "A: 하나씩 삭제": {
+      "pass": true,
+      "rtClean": true
+    },
+    "B: syncNoteDay 실패": {
+      "pass": true
+    },
+    "C: 순서 역전": {
+      "pass": true
+    },
+    "D: 590개+개별삭제": {
+      "pass": true,
+      "ghosts": 0,
+      "rtGhosts": 0
+    }
+  },
+  "passed": 15,
+  "total": 15
+}

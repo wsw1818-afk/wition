@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-03-12T05:04:29.273Z",
+  "results": {
+    "Realtime 구독": {
+      "pass": true
+    },
+    "서버→PC 추가": {
+      "pass": true,
+      "sec": 1
+    },
+    "서버→PC 수정": {
+      "pass": true,
+      "sec": 1
+    },
+    "서버→PC 삭제": {
+      "pass": true,
+      "sec": 1
+    },
+    "배치 추가": {
+      "pass": true,
+      "sec": 1
+    },
+    "Realtime 속도": {
+      "pass": true,
+      "avgSec": 1,
+      "times": [
+        1,
+        1,
+        1
+      ]
+    },
+    "데이터 정합성": {
+      "pass": true,
+      "server": 216,
+      "pc": 216,
+      "diff": 0
+    },
+    "핑퐁 안정성": {
+      "pass": true,
+      "before": 221,
+      "after": 221
+    }
+  },
+  "passed": 9,
+  "total": 9
+}

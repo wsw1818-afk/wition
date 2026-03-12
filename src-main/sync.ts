@@ -309,13 +309,13 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
       slog(`[Realtime] ${table} ${eventType}: ${row.id}`)
     }
 
-    // UI 갱신 콜백 (debounce 300ms: DELETE→INSERT 순서 역전 시 깜빡임 방지)
+    // UI 갱신 콜백 (debounce 100ms: 연속 이벤트 병합, 체감 지연 최소화)
     if (onRealtimeChange) {
       if (realtimeChangeTimer) clearTimeout(realtimeChangeTimer)
       realtimeChangeTimer = setTimeout(() => {
         realtimeChangeTimer = null
         if (onRealtimeChange) onRealtimeChange()
-      }, 300)
+      }, 100)
     }
   } catch (err) {
     console.error(`[Realtime] ${table} 처리 실패:`, err)
@@ -325,6 +325,11 @@ function handleRealtimeEvent(table: string, payload: { eventType: string; new: R
 /** 단건 upsert (Realtime 이벤트용) */
 function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<string, unknown>): void {
   if (table === 'note_day') {
+    // note_count=0 && mood 없음 → 빈 day이므로 로컬에서도 삭제 (잔상 방지)
+    if ((row.note_count === 0 || row.note_count === '0') && !row.mood) {
+      db.prepare('DELETE FROM note_day WHERE id = ?').run(row.id)
+      return
+    }
     db.prepare(`
       INSERT INTO note_day (id, mood, summary, note_count, has_notes, updated_at)
       VALUES (@id, @mood, @summary, @note_count, @has_notes, @updated_at)
@@ -333,6 +338,8 @@ function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<s
         has_notes=@has_notes, updated_at=@updated_at
       WHERE @updated_at > note_day.updated_at
     `).run(row)
+    // upsert 후 실제 아이템 수 확인 — race condition 방어 (DELETE 먼저 도착한 경우)
+    updateDayCount(db, row.id as string, true)
   } else if (table === 'note_item') {
     // day_id에 해당하는 note_day가 없으면 생성
     db.prepare(`INSERT OR IGNORE INTO note_day (id, note_count, has_notes, updated_at) VALUES (@id, 0, 0, @updated_at)`)

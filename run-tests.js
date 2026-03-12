@@ -14,12 +14,14 @@ const TEST_PORT = 19876
 // wition_build/node_modules를 공유 (dotenv, @supabase 등)
 const EXTRA_NODE_PATH = path.resolve(__dirname, 'wition_build', 'node_modules')
 const ALL_TESTS = [
-  'test_delete_resurrection.js',
-  'test_cross_device.js',
-  'test_three_way.js',
-  'test_mobile_to_pc.js',
-  'test_db_features.js',
-  // test_sync_auto.js — Realtime 테스트, 앱 실행 시만 가능 (npm run test:sync)
+  'tests/test_delete_resurrection.js',
+  'tests/test_cross_device.js',
+  'tests/test_three_way.js',
+  'tests/test_mobile_to_pc.js',
+  'tests/test_db_features.js',
+  'tests/test_sync_auto.js',
+  'tests/test_ghost_fix.js',
+  'tests/test_sync_speed.js',
 ]
 
 function ping() {
@@ -74,7 +76,10 @@ async function main() {
   const args = process.argv.slice(2)
   let tests = ALL_TESTS
   if (args.length > 0) {
-    tests = args.map(a => a.endsWith('.js') ? a : `${a}.js`)
+    tests = args.map(a => {
+      const name = a.endsWith('.js') ? a : `${a}.js`
+      return name.startsWith('tests/') ? name : `tests/${name}`
+    })
   }
 
   // 1) 이미 서버가 떠있는지 확인

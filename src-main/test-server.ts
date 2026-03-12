@@ -202,6 +202,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       Sync.setOfflineForTest(false)
       res.end(JSON.stringify({ ok: true, offline: false }))
 
+    } else if (url === '/realtime-status') {
+      res.end(JSON.stringify({ connected: Sync.isRealtimeConnected() }))
+
+    } else if (url === '/realtime-reconnect' && req.method === 'POST') {
+      Sync.reconnectRealtime()
+      res.end(JSON.stringify({ ok: true }))
+
     } else if (url === '/shutdown' && req.method === 'POST') {
       res.end(JSON.stringify({ ok: true, msg: 'shutting down' }))
       setTimeout(() => process.exit(0), 100)
@@ -216,9 +223,24 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   }
 })
 
+/* ─── Realtime 이벤트 추적 ─── */
+let realtimeEvents: Array<{ ts: number; type: string; table: string; id: string }> = []
+
+function startRealtimeTracking(): void {
+  Sync.startRealtime(db, () => {
+    syncLog('[Realtime] 변경 감지 → UI 갱신 콜백')
+  })
+  syncLog('[TestServer] Realtime 구독 시작 요청')
+}
+
 /* ─── 시작 ─── */
 async function main(): Promise<void> {
   await initSyncSession()
+
+  // Realtime 구독 시작 (앱과 동일하게)
+  setTimeout(() => {
+    startRealtimeTracking()
+  }, 1000)
 
   server.listen(TEST_PORT, '127.0.0.1', () => {
     console.log(`\n[TestServer] ✅ http://127.0.0.1:${TEST_PORT} (Headless — Electron 불필요)`)

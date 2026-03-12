@@ -1,0 +1,108 @@
+{
+  "date": "2026-03-12T04:38:50.541Z",
+  "passed": 20,
+  "failed": 0,
+  "total": 20,
+  "results": [
+    {
+      "name": "01. 검색: content + tags LIKE",
+      "status": "PASS",
+      "ms": 12
+    },
+    {
+      "name": "02. 검색: 특수문자 + 엣지케이스",
+      "status": "PASS",
+      "ms": 6
+    },
+    {
+      "name": "03. 알람: 일회성 CRUD + 시간순",
+      "status": "PASS",
+      "ms": 5
+    },
+    {
+      "name": "04. 알람: 반복 타입 (daily/weekdays/weekly)",
+      "status": "PASS",
+      "ms": 6
+    },
+    {
+      "name": "05. 알람: getAlarmDaysByMonth",
+      "status": "PASS",
+      "ms": 2
+    },
+    {
+      "name": "06. 알람: getUpcomingAlarms (20건 제한)",
+      "status": "PASS",
+      "ms": 23
+    },
+    {
+      "name": "07. 알람: resetRepeatingAlarmsFired",
+      "status": "PASS",
+      "ms": 5
+    },
+    {
+      "name": "08. 체크리스트: JSON 파싱 + summary",
+      "status": "PASS",
+      "ms": 4
+    },
+    {
+      "name": "09. note_day 캐시: 블록 추가",
+      "status": "PASS",
+      "ms": 8
+    },
+    {
+      "name": "10. note_day 캐시: 블록 삭제",
+      "status": "PASS",
+      "ms": 11
+    },
+    {
+      "name": "11. 블록 정렬: pinned + order_index",
+      "status": "PASS",
+      "ms": 6
+    },
+    {
+      "name": "12. 마크다운 제거: summary 생성",
+      "status": "PASS",
+      "ms": 4
+    },
+    {
+      "name": "13. Tombstone: 테이블 구조 확인",
+      "status": "PASS",
+      "ms": 4
+    },
+    {
+      "name": "14. 태그 JSON: 저장/조회/검색",
+      "status": "PASS",
+      "ms": 3
+    },
+    {
+      "name": "15. 대량 블록: 100개 + 검색",
+      "status": "PASS",
+      "ms": 99
+    },
+    {
+      "name": "16. mood: 이모지 CRUD",
+      "status": "PASS",
+      "ms": 6
+    },
+    {
+      "name": "17. JSON 블록 타입 무결성",
+      "status": "PASS",
+      "ms": 5
+    },
+    {
+      "name": "18. pending_sync 테이블 구조",
+      "status": "PASS",
+      "ms": 1
+    },
+    {
+      "name": "19. 인덱스 확인",
+      "status": "PASS",
+      "ms": 1
+    },
+    {
+      "name": "20. 최종 정리 + 검증",
+      "status": "PASS",
+      "ms": 7
+    }
+  ]
+}

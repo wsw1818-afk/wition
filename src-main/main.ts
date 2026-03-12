@@ -589,7 +589,7 @@ let testHttpServer: ReturnType<typeof createServer> | null = null
 
 let lastResetDate = ''
 
-/* ── sync:done debounce (300ms 내 중복 방지) ── */
+/* ── sync:done debounce (150ms 내 중복 방지 — Realtime 체감 지연 최소화) ── */
 let syncDoneTimer: ReturnType<typeof setTimeout> | null = null
 function sendSyncDone(): void {
   if (syncDoneTimer) clearTimeout(syncDoneTimer)
@@ -607,7 +607,7 @@ function sendSyncDone(): void {
         `).catch(() => {})
       }
     })
-  }, 300)
+  }, 150)
 }
 
 function checkAlarms(): void {
@@ -1867,7 +1867,7 @@ app.whenReady().then(() => {
         startRealtimeIfReady()
       }, 3000)
 
-      // 경량 폴링: 5초 간격 (Realtime이 메인, quickPull은 fallback)
+      // 경량 폴링: 3초 간격 (Realtime이 메인, quickPull은 fallback — Realtime 미감지 시 빠른 보정)
       quickPullInterval = setInterval(async () => {
         if (!db || !Sync.isOnline()) return
         try {
@@ -1876,10 +1876,10 @@ app.whenReady().then(() => {
             sendSyncDone()
           }
         } catch {}
-      }, 5000)
+      }, 3000)
 
-      // 전체 동기화: 10초 간격 (push + 삭제 감지 + 첨부파일)
-      fullSyncInterval = setInterval(() => runSync(), 10000)
+      // 전체 동기화: 7초 간격 (push + 삭제 감지 + 첨부파일)
+      fullSyncInterval = setInterval(() => runSync(), 7000)
 
       // 1분마다 연결 상태 체크 (오프라인→온라인 전환 시 즉시 동기화 + Realtime 재연결)
       healthCheckInterval = setInterval(async () => {
