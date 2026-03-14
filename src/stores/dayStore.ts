@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { NoteItem, BlockType, ChecklistEntry, NoteDay, Alarm } from '../types'
 import { getDefaultContent } from '../types'
+import { useHistoryStore } from './historyStore'
 
 interface DayState {
   dayId: string | null
@@ -39,6 +40,9 @@ interface DayActions {
 
 export type DayStore = DayState & DayActions
 
+// race condition 방지: 마지막 load 요청만 반영
+let _dayLoadSeq = 0
+
 export const useDayStore = create<DayStore>((set, get) => ({
   dayId: null,
   items: [],
@@ -46,19 +50,21 @@ export const useDayStore = create<DayStore>((set, get) => ({
   loading: false,
 
   load: async (dayId) => {
+    const seq = ++_dayLoadSeq
     set({ loading: true, dayId })
     try {
       const [items, alarms] = await Promise.all([
         window.api.getNoteItems(dayId),
         window.api.getAlarms(dayId),
       ])
-      console.log(`[dayStore.load] dayId=${dayId}, items=${items.length}, ids:`, items.map(i => i.id.slice(0,8)))
+      // stale 응답 무시
+      if (seq !== _dayLoadSeq) return
       set({ items, alarms })
     } catch (err) {
       console.error('dayStore.load:', err)
-      set({ items: [], alarms: [] })
+      if (seq === _dayLoadSeq) set({ items: [], alarms: [] })
     } finally {
-      set({ loading: false })
+      if (seq === _dayLoadSeq) set({ loading: false })
     }
   },
 
@@ -77,7 +83,10 @@ export const useDayStore = create<DayStore>((set, get) => ({
     try {
       const updatedDay = await window.api.upsertNoteItem(newItem)
       // 성공한 경우에만 로컬 상태 반영
-      if (updatedDay) set((s) => ({ items: [...s.items, newItem] }))
+      if (updatedDay) {
+        set((s) => ({ items: [...s.items, newItem] }))
+        useHistoryStore.getState().push({ type: 'add', item: newItem, dayId })
+      }
       return updatedDay
     } catch (err) {
       console.error('addText:', err)
@@ -100,7 +109,10 @@ export const useDayStore = create<DayStore>((set, get) => ({
 
     try {
       const updatedDay = await window.api.upsertNoteItem(newItem)
-      if (updatedDay) set((s) => ({ items: [...s.items, newItem] }))
+      if (updatedDay) {
+        set((s) => ({ items: [...s.items, newItem] }))
+        useHistoryStore.getState().push({ type: 'add', item: newItem, dayId })
+      }
       return updatedDay
     } catch (err) {
       console.error('addChecklist:', err)
@@ -123,7 +135,10 @@ export const useDayStore = create<DayStore>((set, get) => ({
 
     try {
       const updatedDay = await window.api.upsertNoteItem(newItem)
-      if (updatedDay) set((s) => ({ items: [...s.items, newItem] }))
+      if (updatedDay) {
+        set((s) => ({ items: [...s.items, newItem] }))
+        useHistoryStore.getState().push({ type: 'add', item: newItem, dayId })
+      }
       return updatedDay
     } catch (err) {
       console.error('addBlock:', err)
@@ -140,6 +155,7 @@ export const useDayStore = create<DayStore>((set, get) => ({
       const updatedDay = await window.api.upsertNoteItem(updated)
       if (updatedDay) {
         set((s) => ({ items: s.items.map(i => i.id === id ? updated : i) }))
+        useHistoryStore.getState().push({ type: 'update', item, newItem: updated, dayId: item.day_id })
       }
       return updatedDay
     } catch (err) {
@@ -149,12 +165,16 @@ export const useDayStore = create<DayStore>((set, get) => ({
   },
 
   remove: async (id) => {
-    const { dayId } = get()
+    const { dayId, items } = get()
     if (!dayId) return null
 
+    const deletedItem = items.find(i => i.id === id)
     try {
       const updatedDay = await window.api.deleteNoteItem(id, dayId)
       set((s) => ({ items: s.items.filter(i => i.id !== id) }))
+      if (deletedItem) {
+        useHistoryStore.getState().push({ type: 'delete', item: deletedItem, dayId })
+      }
       return updatedDay
     } catch (err) {
       console.error('remove:', err)
@@ -183,6 +203,8 @@ export const useDayStore = create<DayStore>((set, get) => ({
     const { dayId, items } = get()
     if (!dayId) return
 
+    const prevOrder = items.map(i => i.id)
+
     // 즉시 UI 반영 (낙관적)
     const reordered = orderedIds
       .map(id => items.find(i => i.id === id))
@@ -192,6 +214,7 @@ export const useDayStore = create<DayStore>((set, get) => ({
 
     try {
       await window.api.reorderNoteItems(dayId, orderedIds)
+      useHistoryStore.getState().push({ type: 'reorder', prevOrder, newOrder: orderedIds, dayId })
     } catch (err) {
       console.error('reorder:', err)
       // 실패 시 DB에서 다시 로드

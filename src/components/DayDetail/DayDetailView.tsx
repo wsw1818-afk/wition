@@ -11,6 +11,9 @@ import { EmptyState } from '../common/EmptyState'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 import { SortableBlock } from './SortableBlock'
 import { AlarmPanel } from './AlarmPanel'
+import { TemplatePanel } from './TemplatePanel'
+import { CopyMoveDialog } from './CopyMoveDialog'
+import type { NoteItem } from '../../types'
 
 dayjs.locale('ko')
 
@@ -20,6 +23,11 @@ export function DayDetailView() {
   const inputRef = useRef<InputBarHandle>(null)
   const listEndRef = useRef<HTMLDivElement>(null)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [showTemplate, setShowTemplate] = useState(false)
+  const [copyMoveItem, setCopyMoveItem] = useState<NoteItem | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [focusedBlockIdx, setFocusedBlockIdx] = useState(-1)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -32,13 +40,38 @@ export function DayDetailView() {
   useEffect(() => {
     if (selectedDate) {
       load(selectedDate).then(() => {
-        // 빈 날짜 → 바로 입력 포커스 (#12)
         setTimeout(() => inputRef.current?.focus(), 100)
       })
     } else {
       reset()
     }
+    // 선택 모드 해제
+    setSelectMode(false)
+    setSelectedIds(new Set())
+    setFocusedBlockIdx(-1)
   }, [selectedDate])
+
+  // Alt+Up/Down 블록 순서 이동 (1-4)
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+      if (focusedBlockIdx < 0 || items.length < 2) return
+      e.preventDefault()
+
+      const dir = e.key === 'ArrowUp' ? -1 : 1
+      const newIdx = focusedBlockIdx + dir
+      if (newIdx < 0 || newIdx >= items.length) return
+
+      const newItems = [...items]
+      const [moved] = newItems.splice(focusedBlockIdx, 1)
+      newItems.splice(newIdx, 0, moved)
+      const orderedIds = newItems.map(i => i.id)
+      reorder(orderedIds)
+      setFocusedBlockIdx(newIdx)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [focusedBlockIdx, items, reorder])
 
   if (!selectedDate) return null
 
@@ -92,6 +125,26 @@ export function DayDetailView() {
   async function handleTagsChange(id: string, tags: string[]) {
     const day = await update(id, { tags: JSON.stringify(tags) })
     if (day) patchDay(day)
+  }
+
+  // 선택 모드 토글
+  function toggleSelectItem(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  // 선택된 아이템 일괄 삭제 (2-3)
+  async function handleDeleteSelected() {
+    for (const id of selectedIds) {
+      const day = await remove(id)
+      if (day) patchDay(day)
+    }
+    setSelectedIds(new Set())
+    setSelectMode(false)
   }
 
   async function handleAttachFile() {
@@ -169,6 +222,51 @@ export function DayDetailView() {
           </button>
           <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100">{dateLabel}</h2>
         </div>
+        <div className="flex items-center gap-1">
+          {/* 선택 모드 토글 (2-3) */}
+          <button
+            onClick={() => {
+              setSelectMode(!selectMode)
+              setSelectedIds(new Set())
+            }}
+            className={`p-1.5 rounded-lg transition-colors text-xs
+              ${selectMode
+                ? 'bg-accent-100 dark:bg-accent-500/20 text-accent-600 dark:text-accent-400'
+                : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+            title="선택 모드"
+          >
+            ☑
+          </button>
+          {/* 선택 삭제 */}
+          {selectMode && selectedIds.size > 0 && (
+            <button
+              onClick={handleDeleteSelected}
+              className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors text-xs text-red-500"
+              title={`${selectedIds.size}개 삭제`}
+            >
+              🗑 {selectedIds.size}
+            </button>
+          )}
+          {/* 템플릿 (3-2) */}
+          <button
+            onClick={() => setShowTemplate(true)}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            title="템플릿"
+          >
+            📋
+          </button>
+          {/* 마크다운 내보내기 */}
+          <button
+            onClick={async () => {
+              const path = await window.api.exportMarkdown(selectedDate!)
+              if (path) alert(`내보내기 완료: ${path}`)
+            }}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            title="마크다운 내보내기"
+          >
+            MD
+          </button>
+        </div>
       </div>
 
       <AlarmPanel dayId={selectedDate} />
@@ -182,15 +280,27 @@ export function DayDetailView() {
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
               <div className="flex flex-col gap-1.5 py-1">
-                {items.map((item) => (
-                  <SortableBlock
-                    key={item.id}
-                    item={item}
-                    onUpdate={(c: string) => handleUpdate(item.id, c)}
-                    onTagsChange={(tags: string[]) => handleTagsChange(item.id, tags)}
-                    onDelete={() => handleDeleteRequest(item.id)}
-                    onTogglePin={() => handleTogglePin(item.id)}
-                  />
+                {items.map((item, idx) => (
+                  <div key={item.id} className="flex items-start gap-1" onClick={() => setFocusedBlockIdx(idx)}>
+                    {selectMode && (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(item.id)}
+                        onChange={() => toggleSelectItem(item.id)}
+                        className="mt-2.5 w-4 h-4 accent-accent-500 flex-shrink-0 cursor-pointer"
+                      />
+                    )}
+                    <div className={`flex-1 min-w-0 ${focusedBlockIdx === idx ? 'ring-1 ring-accent-300 dark:ring-accent-600 rounded-md' : ''}`}>
+                      <SortableBlock
+                        item={item}
+                        onUpdate={(c: string) => handleUpdate(item.id, c)}
+                        onTagsChange={(tags: string[]) => handleTagsChange(item.id, tags)}
+                        onDelete={() => handleDeleteRequest(item.id)}
+                        onTogglePin={() => handleTogglePin(item.id)}
+                        onCopyMove={() => setCopyMoveItem(item)}
+                      />
+                    </div>
+                  </div>
                 ))}
                 <div ref={listEndRef} />
               </div>
@@ -208,6 +318,29 @@ export function DayDetailView() {
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {/* 템플릿 패널 (3-2) */}
+      {showTemplate && selectedDate && (
+        <TemplatePanel
+          dayId={selectedDate}
+          items={items}
+          onApplied={() => { load(selectedDate!); setShowTemplate(false) }}
+          onClose={() => setShowTemplate(false)}
+        />
+      )}
+
+      {/* 복사/이동 다이얼로그 (2-1) */}
+      {copyMoveItem && (
+        <CopyMoveDialog
+          item={copyMoveItem}
+          open={!!copyMoveItem}
+          onClose={() => setCopyMoveItem(null)}
+          onDone={() => {
+            if (selectedDate) load(selectedDate)
+            useCalendarStore.getState().loadMonth(useCalendarStore.getState().currentMonth)
+          }}
+        />
+      )}
     </div>
   )
 }

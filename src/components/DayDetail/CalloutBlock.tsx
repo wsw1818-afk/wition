@@ -11,11 +11,12 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
 const CALLOUT_EMOJIS = ['💡', '⚠️', '❗', '📌', '✅', '❓', '📝', '🔥']
 
-export function CalloutBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function CalloutBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const data = parseCallout(item.content)
   const [editing, setEditing] = useState(!data.text)
   const [text, setText] = useState(data.text)
@@ -121,7 +122,7 @@ export function CalloutBlock({ item, onUpdate, onTagsChange, onDelete, onToggleP
       </div>
 
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

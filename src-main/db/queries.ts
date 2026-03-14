@@ -233,7 +233,190 @@ export function resetRepeatingAlarmsFired(db: Database.Database): void {
     .run(Date.now())
 }
 
+/* ────────────────────────── 통계 쿼리 ──────────────────────────── */
+
+/** 월별 일간 메모 수 */
+export function getMonthlyStats(db: Database.Database, yearMonth: string): Array<{ day: string; count: number }> {
+  const pattern = `${yearMonth}-%`
+  return db
+    .prepare(`
+      SELECT day_id as day, COUNT(*) as count
+      FROM note_item
+      WHERE day_id LIKE ?
+      GROUP BY day_id
+      ORDER BY day_id
+    `)
+    .all(pattern) as Array<{ day: string; count: number }>
+}
+
+/** 월별 기분 이모지 카운트 */
+export function getMoodStats(db: Database.Database, yearMonth: string): Array<{ mood: string; count: number }> {
+  const pattern = `${yearMonth}-%`
+  return db
+    .prepare(`
+      SELECT mood, COUNT(*) as count
+      FROM note_day
+      WHERE id LIKE ? AND mood IS NOT NULL AND mood != ''
+      GROUP BY mood
+      ORDER BY count DESC
+    `)
+    .all(pattern) as Array<{ mood: string; count: number }>
+}
+
+/** 전체 태그별 카운트 (상위 10) */
+export function getTagStats(db: Database.Database): Array<{ tag: string; count: number }> {
+  // tags 컬럼은 JSON 배열 문자열. SQLite의 json_each로 파싱
+  try {
+    return db
+      .prepare(`
+        SELECT j.value as tag, COUNT(*) as count
+        FROM note_item, json_each(note_item.tags) j
+        WHERE j.value != ''
+        GROUP BY j.value
+        ORDER BY count DESC
+        LIMIT 10
+      `)
+      .all() as Array<{ tag: string; count: number }>
+  } catch {
+    // json_each가 지원 안 되는 SQLite 버전 fallback
+    return []
+  }
+}
+
+/* ────────────────────────── 반복 메모 CRUD ──────────────────────── */
+
+export interface RecurringBlockRow {
+  id: string
+  type: string
+  content: string
+  repeat: string        // 'daily' | 'weekdays' | 'weekly'
+  day_of_week: number   // 0-6
+  created_at: number
+}
+
+export function getRecurringBlocks(db: Database.Database): RecurringBlockRow[] {
+  return db
+    .prepare('SELECT * FROM recurring_blocks ORDER BY created_at ASC')
+    .all() as RecurringBlockRow[]
+}
+
+export function upsertRecurringBlock(db: Database.Database, block: RecurringBlockRow): void {
+  db.prepare(`
+    INSERT INTO recurring_blocks (id, type, content, repeat, day_of_week, created_at)
+    VALUES (@id, @type, @content, @repeat, @day_of_week, @created_at)
+    ON CONFLICT(id) DO UPDATE SET
+      type=@type, content=@content, repeat=@repeat, day_of_week=@day_of_week
+  `).run(block)
+}
+
+export function deleteRecurringBlock(db: Database.Database, id: string): void {
+  db.prepare('DELETE FROM recurring_blocks WHERE id = ?').run(id)
+}
+
+/** 반복 메모 자동 생성: 오늘 날짜에 맞는 반복 블록을 note_item으로 생성 */
+export function checkRecurringBlocks(db: Database.Database, todayStr: string): number {
+  // 이미 오늘 체크했는지 확인
+  const lastCheck = db.prepare("SELECT value FROM app_meta WHERE key = 'last_recurring_check'").get() as { value: string } | undefined
+  if (lastCheck?.value === todayStr) return 0
+
+  const now = Date.now()
+  const todayDate = new Date(todayStr + 'T00:00:00')
+  const todayDow = todayDate.getDay() // 0=일, 6=토
+
+  const blocks = getRecurringBlocks(db)
+  let created = 0
+
+  const uuidFn = () => {
+    // 간단한 UUID v4 생성
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+    })
+  }
+
+  db.transaction(() => {
+    for (const block of blocks) {
+      let shouldCreate = false
+
+      switch (block.repeat) {
+        case 'daily':
+          shouldCreate = true
+          break
+        case 'weekdays':
+          shouldCreate = todayDow >= 1 && todayDow <= 5
+          break
+        case 'weekly':
+          shouldCreate = todayDow === block.day_of_week
+          break
+      }
+
+      if (shouldCreate) {
+        const itemId = uuidFn()
+        // 현재 아이템 수 조회해서 order_index 결정
+        const stat = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(todayStr) as { cnt: number }
+        db.prepare(`
+          INSERT INTO note_item (id, day_id, type, content, tags, pinned, order_index, created_at, updated_at)
+          VALUES (@id, @day_id, @type, @content, '[]', 0, @order_index, @now, @now)
+        `).run({
+          id: itemId,
+          day_id: todayStr,
+          type: block.type,
+          content: block.content,
+          order_index: stat.cnt,
+          now,
+        })
+        created++
+      }
+    }
+
+    // 체크 완료 기록
+    db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('last_recurring_check', ?)").run(todayStr)
+
+    // 생성된 블록이 있으면 day 캐시 갱신
+    if (created > 0) {
+      refreshDayCache_external(db, todayStr, now)
+    }
+  })()
+
+  return created
+}
+
+/* ────────────────────── 전체 NoteItem 조회 (내보내기용) ──────────── */
+
+/** 전체 NoteItem 조회 (day_id 기준 정렬) */
+export function getAllNoteItems(db: Database.Database): NoteItemRow[] {
+  return db
+    .prepare('SELECT * FROM note_item ORDER BY day_id ASC, order_index ASC')
+    .all() as NoteItemRow[]
+}
+
+/* ────────────────── 토글 블록 접기/펼치기 상태 저장 ────────────── */
+
+/** 토글 블록 상태 조회 (app_meta의 toggle_states) */
+export function getToggleStates(db: Database.Database): Record<string, boolean> {
+  try {
+    const row = db.prepare("SELECT value FROM app_meta WHERE key = 'toggle_states'").get() as { value: string } | undefined
+    return row?.value ? JSON.parse(row.value) : {}
+  } catch { return {} }
+}
+
+/** 개별 토글 블록 상태 저장 */
+export function setToggleState(db: Database.Database, blockId: string, open: boolean): void {
+  const states = getToggleStates(db)
+  if (open) {
+    states[blockId] = true
+  } else {
+    delete states[blockId]  // 닫힌 상태는 기본값이므로 제거하여 저장 공간 절약
+  }
+  db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('toggle_states', ?)").run(JSON.stringify(states))
+}
+
 /* ────────────────────────── 내부 헬퍼 ──────────────────────────── */
+
+/** NoteDay의 캐시 컬럼(note_count, has_notes, summary)을 재계산 (외부 호출용) */
+export function refreshDayCache_external(db: Database.Database, dayId: string, now: number): void {
+  refreshDayCache(db, dayId, now)
+}
 
 /** NoteDay의 캐시 컬럼(note_count, has_notes, summary)을 재계산 */
 function refreshDayCache(db: Database.Database, dayId: string, now: number): void {
@@ -256,6 +439,11 @@ function refreshDayCache(db: Database.Database, dayId: string, now: number): voi
         const items = JSON.parse(stat.first_content) as Array<{ text: string }>
         summary = items.map(i => i.text).join(', ').slice(0, 80)
       } catch { /* 파싱 실패 시 null */ }
+    } else if (stat.first_type === 'image') {
+      try {
+        const imgData = JSON.parse(stat.first_content) as { caption?: string }
+        summary = imgData.caption ? `🖼 ${imgData.caption}`.slice(0, 80) : '🖼 이미지'
+      } catch { summary = '🖼 이미지' }
     } else {
       // 인라인 마크다운/파일 태그 제거하여 순수 텍스트만 추출
       summary = stat.first_content
@@ -312,6 +500,70 @@ export function getTombstones(db: Database.Database): DeletedItem[] {
 export function isTombstoned(db: Database.Database, tableName: string, itemId: string): boolean {
   const row = db.prepare('SELECT 1 FROM deleted_items WHERE table_name = ? AND item_id = ?').get(tableName, itemId)
   return !!row
+}
+
+/* ────────────────────────── 템플릿 CRUD ──────────────────────────── */
+
+export interface TemplateRow {
+  id: string
+  name: string
+  blocks: string  // JSON 배열 문자열
+  created_at: number
+}
+
+/** 전체 템플릿 목록 */
+export function getTemplates(db: Database.Database): TemplateRow[] {
+  return db.prepare('SELECT * FROM templates ORDER BY created_at DESC').all() as TemplateRow[]
+}
+
+/** 단일 템플릿 조회 */
+export function getTemplateById(db: Database.Database, id: string): TemplateRow | undefined {
+  return db.prepare('SELECT * FROM templates WHERE id = ?').get(id) as TemplateRow | undefined
+}
+
+/** 템플릿 추가/수정 */
+export function upsertTemplate(db: Database.Database, tpl: TemplateRow): void {
+  db.prepare(`
+    INSERT INTO templates (id, name, blocks, created_at)
+    VALUES (@id, @name, @blocks, @created_at)
+    ON CONFLICT(id) DO UPDATE SET name=@name, blocks=@blocks
+  `).run(tpl)
+}
+
+/** 템플릿 삭제 */
+export function deleteTemplate(db: Database.Database, id: string): void {
+  db.prepare('DELETE FROM templates WHERE id = ?').run(id)
+}
+
+/* ────────────────────── 태그 필터 달력 조회 ──────────────────────── */
+
+/** 특정 태그를 포함하는 날짜 목록 (달력 필터용) */
+export function getNoteDaysByMonthWithTag(db: Database.Database, yearMonth: string, tag: string): NoteDayRow[] {
+  const pattern = `${yearMonth}-%`
+  try {
+    return db
+      .prepare(`
+        SELECT DISTINCT d.*
+        FROM note_day d
+        INNER JOIN note_item i ON i.day_id = d.id
+        INNER JOIN json_each(i.tags) j ON j.value = @tag
+        WHERE d.id LIKE @p
+        ORDER BY d.id
+      `)
+      .all({ p: pattern, tag }) as NoteDayRow[]
+  } catch {
+    // json_each 미지원 fallback: LIKE 검색
+    const tagLike = `%"${tag}"%`
+    return db
+      .prepare(`
+        SELECT DISTINCT d.*
+        FROM note_day d
+        INNER JOIN note_item i ON i.day_id = d.id
+        WHERE d.id LIKE @p AND i.tags LIKE @tagLike
+        ORDER BY d.id
+      `)
+      .all({ p: pattern, tagLike }) as NoteDayRow[]
+  }
 }
 
 /** 동기화 완료된 tombstone 삭제 */

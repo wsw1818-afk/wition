@@ -9,7 +9,7 @@ dayjs.locale('ko')
 
 export function SearchPanel() {
   const { isOpen, query, results, loading, close, search } = useSearchStore()
-  const { selectDate } = useCalendarStore()
+  const { selectDate, loadMonth, currentMonth } = useCalendarStore()
   const inputRef = useRef<HTMLInputElement>(null)
 
   // 패널 열릴 때 입력 필드 포커스
@@ -32,8 +32,12 @@ export function SearchPanel() {
 
   if (!isOpen) return null
 
-  // 검색 결과 클릭 시 해당 날짜로 이동
+  // 검색 결과 클릭 시 해당 날짜로 이동 (월도 함께 변경)
   function handleResultClick(dayId: string) {
+    const targetMonth = dayId.slice(0, 7) // "YYYY-MM"
+    if (targetMonth !== currentMonth) {
+      loadMonth(targetMonth)
+    }
     selectDate(dayId)
     close()
   }

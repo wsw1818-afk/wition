@@ -4,6 +4,7 @@ import { parseTags } from '../../types'
 import { TagInput } from './TagInput'
 import { InlineRenderer } from './InlineRenderer'
 import { BlockActions } from './BlockActions'
+import { useCalendarStore } from '../../stores/calendarStore'
 
 interface Props {
   item: NoteItem
@@ -11,6 +12,7 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
 function formatUploadTime(epoch: number): string {
@@ -23,10 +25,17 @@ function formatUploadTime(epoch: number): string {
   return `업로드: ${y}.${mo}.${da} ${h}:${mi}`
 }
 
-export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const [editing, setEditing] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { selectDate, loadMonth } = useCalendarStore()
+
+  // [[YYYY-MM-DD]] 날짜 링크 클릭 → 해당 날짜로 이동
+  const handleDateClick = useCallback((date: string) => {
+    const yearMonth = date.slice(0, 7)
+    loadMonth(yearMonth).then(() => selectDate(date))
+  }, [selectDate, loadMonth])
 
   // [file:...] 태그 감지 → 파일 첨부 블록 여부
   const fileTagMatch = item.content.match(/\[file:.+?\]/)
@@ -82,7 +91,7 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
       {isFileBlock ? (
         /* 파일 첨부 블록: 편집 불가, 업로드 시간 표시 */
         <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed">
-          <InlineRenderer text={item.content} />
+          <InlineRenderer text={item.content} onDateClick={handleDateClick} />
           <div className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 select-none">
             {formatUploadTime(item.created_at)}
           </div>
@@ -106,14 +115,14 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
           className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
                      cursor-text min-h-[20px]"
         >
-          <InlineRenderer text={item.content} />
+          <InlineRenderer text={item.content} onDateClick={handleDateClick} />
         </div>
       )}
 
       {/* 태그 */}
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
 
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

@@ -13,6 +13,7 @@ export type BlockType =
   | 'callout'
   | 'code'
   | 'toggle'
+  | 'image'
 
 /** 달력 셀 표시용 (NoteDay 테이블 1:1) */
 export interface NoteDay {
@@ -57,6 +58,8 @@ export function getDefaultContent(type: BlockType): string {
       return JSON.stringify({ language: 'text', code: '' })
     case 'toggle':
       return JSON.stringify({ title: '', children: '' })
+    case 'image':
+      return JSON.stringify({ src: '', caption: '' })
     default:
       return ''
   }
@@ -95,6 +98,17 @@ export function parseToggle(content: string): ToggleData {
   catch { return { title: '', children: '' } }
 }
 
+/** 이미지 블록 내부 구조 */
+export interface ImageData {
+  src: string
+  caption: string
+}
+
+export function parseImageData(content: string): ImageData {
+  try { return JSON.parse(content) }
+  catch { return { src: '', caption: '' } }
+}
+
 /** 슬래시 커맨드 메뉴 항목 */
 export interface SlashMenuItem {
   type: BlockType
@@ -116,7 +130,16 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
   { type: 'callout',       label: '콜아웃',       description: '강조 블록',            icon: '💡' },
   { type: 'code',          label: '코드',         description: '코드 블록',            icon: '</>' },
   { type: 'toggle',        label: '토글',         description: '접기/펼치기 블록',     icon: '▶' },
+  { type: 'image',         label: '이미지',       description: '이미지 블록',          icon: '🖼' },
 ]
+
+/** 템플릿 */
+export interface Template {
+  id: string
+  name: string
+  blocks: string  // JSON 배열: Array<{ type: BlockType; content: string }>
+  created_at: number
+}
 
 /** 알람 반복 유형 */
 export type RepeatType = 'none' | 'daily' | 'weekdays' | 'weekly'
@@ -187,6 +210,12 @@ export interface ElectronAPI {
   saveClipboardImage: (base64: string) => Promise<{ name: string; path: string; size: number } | null>
   getCalendarWidth: () => Promise<number>
   setCalendarWidth: (width: number) => Promise<void>
+  getToggleStates:  () => Promise<Record<string, boolean>>
+  setToggleState:   (blockId: string, open: boolean) => Promise<void>
+  exportMarkdown:   (dayId?: string) => Promise<string | null>
+  getSyncHistory:   () => Promise<Array<{ timestamp: number; pulled: number; pushed: number; cleaned: number; duration: number }>>
+  getLastBackupAt:  () => Promise<number>
+  onBackupFailed:   (cb: (error: string) => void) => () => void
   syncNow:          () => Promise<{ ok: boolean; pulled?: number; pushed?: number; reason?: string }>
   getSyncStatus:    () => Promise<{ online: boolean; reachable: boolean; lastSyncAt: number }>
   onSyncDone:       (cb: () => void) => () => void
@@ -206,6 +235,47 @@ export interface ElectronAPI {
   authSetAutoLogin:    (enabled: boolean) => Promise<{ ok: boolean }>
   authGetLocalAccounts: () => Promise<Array<{ id: string; email: string }>>
   authOfflineLogin:    (userId: string, password: string) => Promise<{ ok: boolean; user?: AuthUser; error?: string }>
+  // 통계
+  getMonthlyStats:  (yearMonth: string) => Promise<Array<{ day: string; count: number }>>
+  getMoodStats:     (yearMonth: string) => Promise<Array<{ mood: string; count: number }>>
+  getTagStats:      () => Promise<Array<{ tag: string; count: number }>>
+  // 반복 메모
+  getRecurringBlocks:    () => Promise<Array<{ id: string; type: string; content: string; repeat: string; day_of_week: number; created_at: number }>>
+  upsertRecurringBlock:  (block: { id: string; type: string; content: string; repeat: string; day_of_week: number; created_at: number }) => Promise<boolean>
+  deleteRecurringBlock:  (id: string) => Promise<boolean>
+  // 암호화
+  encryptBlock:     (id: string, password: string) => Promise<boolean>
+  decryptBlock:     (id: string, password: string) => Promise<string | null>
+  // OneDrive
+  onedriveGetConfig: () => Promise<{ enabled: boolean; path: string }>
+  onedriveSetPath:   () => Promise<{ ok: boolean; path?: string }>
+  onedriveSetEnabled:(enabled: boolean) => Promise<{ ok: boolean }>
+  onedriveExport:    () => Promise<{ ok: boolean; error?: string }>
+  onedriveImport:    () => Promise<{ ok: boolean; error?: string }>
+  // Realtime 상태
+  getRealtimeStatus: () => Promise<'connected' | 'disconnected' | 'reconnecting'>
+  // 동기화 충돌 알림
+  onSyncConflict:    (cb: (msg: string) => void) => () => void
+  // 태그 필터
+  getNoteDaysWithTag: (yearMonth: string, tag: string) => Promise<NoteDay[]>
+  // 템플릿
+  getTemplates:      () => Promise<Template[]>
+  upsertTemplate:    (template: Template) => Promise<boolean>
+  deleteTemplate:    (id: string) => Promise<boolean>
+  applyTemplate:     (templateId: string, dayId: string) => Promise<{ ok: boolean; error?: string }>
+  // PIN 잠금
+  getPinEnabled:     () => Promise<boolean>
+  setPin:            (pin: string | null) => Promise<{ ok: boolean }>
+  verifyPin:         (pin: string) => Promise<{ ok: boolean }>
+  // 일괄 삭제
+  deleteAllItemsByDay: (dayId: string) => Promise<number>
+  // 닫기 시 트레이
+  getCloseToTray:    () => Promise<boolean>
+  setCloseToTray:    (enabled: boolean) => Promise<void>
+  // 자격증명 저장
+  authSaveCredentials: (email: string, password: string) => Promise<{ ok: boolean }>
+  authGetCredentials:  () => Promise<{ ok: boolean; email?: string; password?: string }>
+  authClearCredentials:() => Promise<{ ok: boolean }>
   minimize:         () => void
   maximize:         () => void
   close:            () => void

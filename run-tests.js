@@ -13,6 +13,11 @@ const path = require('path')
 const TEST_PORT = 19876
 // wition_build/node_modules를 공유 (dotenv, @supabase 등)
 const EXTRA_NODE_PATH = path.resolve(__dirname, 'wition_build', 'node_modules')
+// 서버 불필요 — 순수 로직 테스트 (먼저 실행)
+const STANDALONE_TESTS = [
+  'tests/test_loadmonth_race.js',
+]
+
 const ALL_TESTS = [
   'tests/test_delete_resurrection.js',
   'tests/test_cross_device.js',
@@ -22,6 +27,7 @@ const ALL_TESTS = [
   'tests/test_sync_auto.js',
   'tests/test_ghost_fix.js',
   'tests/test_sync_speed.js',
+  'tests/test_new_features.js',
 ]
 
 function ping() {
@@ -128,8 +134,17 @@ async function main() {
     console.log('[Runner] 테스트 서버 준비 완료\n')
   }
 
-  // 3) 테스트 실행
+  // 3-0) Standalone 테스트 (서버 불필요, 항상 실행)
   let passed = 0, failed = 0
+  if (args.length === 0) {
+    for (const test of STANDALONE_TESTS) {
+      const code = await runTest(test)
+      if (code === 0) passed++
+      else failed++
+    }
+  }
+
+  // 3) 서버 기반 테스트 실행
   for (const test of tests) {
     const code = await runTest(test)
     if (code === 0) passed++
@@ -138,7 +153,8 @@ async function main() {
 
   // 4) 결과 요약
   console.log(`\n${'═'.repeat(60)}`)
-  console.log(`[Runner] 결과: ${passed} 통과, ${failed} 실패 (총 ${tests.length}개)`)
+  const total = passed + failed
+  console.log(`[Runner] 결과: ${passed} 통과, ${failed} 실패 (총 ${total}개)`)
   console.log('═'.repeat(60))
 
   // 5) 테스트 서버 종료 (우리가 시작한 경우만)

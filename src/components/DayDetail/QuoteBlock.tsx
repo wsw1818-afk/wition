@@ -10,9 +10,10 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
-export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const [editing, setEditing] = useState(!item.content)
   const [text, setText] = useState(item.content)
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -82,7 +83,7 @@ export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
       </div>
 
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

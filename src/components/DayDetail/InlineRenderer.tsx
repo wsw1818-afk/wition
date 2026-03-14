@@ -1,7 +1,7 @@
 /** 인라인 마크다운 서식을 React 엘리먼트로 렌더링
- *  지원: **굵게**, *기울임*, `코드`, [링크](url), [file:경로]
+ *  지원: **굵게**, *기울임*, `코드`, [링크](url), [file:경로], [[YYYY-MM-DD]]
  */
-export function InlineRenderer({ text }: { text: string }) {
+export function InlineRenderer({ text, onDateClick }: { text: string; onDateClick?: (date: string) => void }) {
   const parts = parseInline(text)
   if (parts.length === 1 && parts[0].type === 'text') return <>{text}</>
 
@@ -27,6 +27,21 @@ export function InlineRenderer({ text }: { text: string }) {
                 {part.content}
               </a>
             )
+          case 'datelink': {
+            const dateStr = part.content
+            return (
+              <button
+                key={i}
+                onClick={(e) => { e.stopPropagation(); onDateClick?.(dateStr) }}
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded
+                           bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400
+                           hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors cursor-pointer text-[13px]"
+                title={`${dateStr}로 이동`}
+              >
+                📅 {dateStr}
+              </button>
+            )
+          }
           case 'file': {
             // timestamp prefix 제거하여 원본 파일명 표시
             const displayName = part.content.replace(/^\d+_/, '')
@@ -55,15 +70,15 @@ export function InlineRenderer({ text }: { text: string }) {
 }
 
 interface InlinePart {
-  type: 'text' | 'bold' | 'italic' | 'code' | 'link' | 'file'
+  type: 'text' | 'bold' | 'italic' | 'code' | 'link' | 'file' | 'datelink'
   content: string
   url?: string
 }
 
 function parseInline(text: string): InlinePart[] {
   const parts: InlinePart[] = []
-  // 순서: file → link → bold → code → italic
-  const regex = /\[file:(.+?)\]|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|`(.+?)`|\*(.+?)\*/g
+  // 순서: datelink → file → link → bold → code → italic
+  const regex = /\[\[(\d{4}-\d{2}-\d{2})\]\]|\[file:(.+?)\]|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|`(.+?)`|\*(.+?)\*/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
@@ -72,15 +87,17 @@ function parseInline(text: string): InlinePart[] {
       parts.push({ type: 'text', content: text.slice(lastIndex, match.index) })
     }
     if (match[1] !== undefined) {
-      parts.push({ type: 'file', content: match[1] })
+      parts.push({ type: 'datelink', content: match[1] })
     } else if (match[2] !== undefined) {
-      parts.push({ type: 'link', content: match[2], url: match[3] })
-    } else if (match[4] !== undefined) {
-      parts.push({ type: 'bold', content: match[4] })
+      parts.push({ type: 'file', content: match[2] })
+    } else if (match[3] !== undefined) {
+      parts.push({ type: 'link', content: match[3], url: match[4] })
     } else if (match[5] !== undefined) {
-      parts.push({ type: 'code', content: match[5] })
+      parts.push({ type: 'bold', content: match[5] })
     } else if (match[6] !== undefined) {
-      parts.push({ type: 'italic', content: match[6] })
+      parts.push({ type: 'code', content: match[6] })
+    } else if (match[7] !== undefined) {
+      parts.push({ type: 'italic', content: match[7] })
     }
     lastIndex = match.index + match[0].length
   }

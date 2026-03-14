@@ -7,9 +7,10 @@ interface Props {
   onUpdate: (content: string) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
-export function HeadingBlock({ item, onUpdate, onDelete, onTogglePin }: Props) {
+export function HeadingBlock({ item, onUpdate, onDelete, onTogglePin, onCopyMove }: Props) {
   const [editing, setEditing] = useState(!item.content)
   const [text, setText] = useState(item.content)
   const ref = useRef<HTMLInputElement>(null)
@@ -63,7 +64,7 @@ export function HeadingBlock({ item, onUpdate, onDelete, onTogglePin }: Props) {
           {item.content || <span className="text-gray-300 dark:text-gray-600">제목 {level}</span>}
         </div>
       )}
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

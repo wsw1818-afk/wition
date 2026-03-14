@@ -12,6 +12,10 @@ interface CalendarState {
   /** 해당 월에서 알람이 있는 날짜 세트 */
   alarmDays: Set<string>
   loading: boolean
+  /** 태그 필터 (null이면 필터 없음) */
+  filterTag: string | null
+  /** 태그 필터된 날짜 세트 */
+  filteredDays: Set<string>
 }
 
 interface CalendarActions {
@@ -23,9 +27,14 @@ interface CalendarActions {
   clearSelection: () => void
   /** DB에서 반환된 NoteDay로 캐시 갱신 (아이템 추가/삭제 후 호출) */
   patchDay: (day: NoteDay | null) => void
+  /** 태그 필터 설정 (null이면 해제) */
+  setFilterTag: (tag: string | null) => Promise<void>
 }
 
 export type CalendarStore = CalendarState & CalendarActions
+
+// race condition 방지: 마지막 요청만 반영
+let _loadSeq = 0
 
 export const useCalendarStore = create<CalendarStore>((set, get) => ({
   currentMonth: dayjs().format('YYYY-MM'),
@@ -33,21 +42,30 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   dayMap: {},
   alarmDays: new Set<string>(),
   loading: false,
+  filterTag: null,
+  filteredDays: new Set<string>(),
 
   loadMonth: async (yearMonth) => {
-    set({ loading: true, currentMonth: yearMonth })
+    const seq = ++_loadSeq
+    const prev = get()
+    // 같은 월 재로드 시 loading 표시 없이 백그라운드 갱신 (깜빡임 방지)
+    if (prev.currentMonth !== yearMonth) {
+      set({ loading: true, currentMonth: yearMonth })
+    }
     try {
       const [rows, alarmDayList] = await Promise.all([
         window.api.getNoteDays(yearMonth),
         window.api.getAlarmDaysByMonth(yearMonth),
       ])
+      // stale 응답 무시
+      if (seq !== _loadSeq) return
       const map: Record<string, NoteDay> = {}
       for (const r of rows) map[r.id] = r
       set({ dayMap: map, alarmDays: new Set(alarmDayList) })
     } catch (err) {
       console.error('loadMonth:', err)
     } finally {
-      set({ loading: false })
+      if (seq === _loadSeq) set({ loading: false })
     }
   },
 
@@ -83,5 +101,19 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
       }
       return { dayMap: next }
     })
-  }
+  },
+
+  setFilterTag: async (tag) => {
+    set({ filterTag: tag })
+    if (!tag) {
+      set({ filteredDays: new Set<string>() })
+      return
+    }
+    try {
+      const rows = await window.api.getNoteDaysWithTag(get().currentMonth, tag)
+      set({ filteredDays: new Set(rows.map(r => r.id)) })
+    } catch {
+      set({ filteredDays: new Set<string>() })
+    }
+  },
 }))

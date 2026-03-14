@@ -10,10 +10,11 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
 /** 글머리 기호 / 번호 목록 블록 */
-export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const [editing, setEditing] = useState(!item.content)
   const [text, setText] = useState(item.content)
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -91,7 +92,7 @@ export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
       )}
 
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

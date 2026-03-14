@@ -11,11 +11,26 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
-export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const data = parseToggle(item.content)
   const [open, setOpen] = useState(false)
+
+  // DB에서 토글 상태 로드 (초기 1회)
+  useEffect(() => {
+    window.api.getToggleStates().then((states) => {
+      if (states[item.id]) setOpen(true)
+    })
+  }, [item.id])
+
+  // 토글 시 DB에 상태 저장
+  const handleToggle = useCallback(() => {
+    const next = !open
+    setOpen(next)
+    window.api.setToggleState(item.id, next)
+  }, [open, item.id])
   const [editingTitle, setEditingTitle] = useState(!data.title)
   const [editingBody, setEditingBody] = useState(false)
   const [title, setTitle] = useState(data.title)
@@ -82,7 +97,7 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
       {/* 토글 헤더 */}
       <div className="flex items-start gap-1.5">
         <button
-          onClick={() => setOpen(!open)}
+          onClick={handleToggle}
           className="mt-0.5 flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-transform"
           style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}
         >
@@ -144,7 +159,7 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
       )}
 
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

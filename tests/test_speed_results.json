@@ -1,32 +1,32 @@
 {
-  "timestamp": "2026-03-12T06:04:10.939Z",
+  "timestamp": "2026-03-13T03:48:04.489Z",
   "results": {
     "01: INSERT 지연": {
       "min": 203,
-      "max": 219,
-      "avg": 211,
-      "median": 211,
-      "p90": 218,
-      "stddev": 5,
+      "max": 220,
+      "avg": 209,
+      "median": 207,
+      "p90": 215,
+      "stddev": 4,
       "count": 30,
       "timeouts": 0
     },
     "02: UPDATE 지연": {
       "min": 203,
-      "max": 218,
-      "avg": 210,
-      "median": 210,
-      "p90": 217,
-      "stddev": 4,
+      "max": 226,
+      "avg": 209,
+      "median": 208,
+      "p90": 216,
+      "stddev": 5,
       "count": 30,
       "timeouts": 0
     },
     "03: DELETE 지연": {
-      "min": 204,
+      "min": 203,
       "max": 218,
-      "avg": 211,
-      "median": 211,
-      "p90": 217,
+      "avg": 209,
+      "median": 208,
+      "p90": 215,
       "stddev": 4,
       "count": 30,
       "timeouts": 0
@@ -34,26 +34,26 @@
     "04: burst INSERT": {
       "min": 1,
       "max": 205,
-      "avg": 14,
+      "avg": 16,
       "median": 1,
       "p90": 1,
-      "stddev": 49,
-      "count": 16,
-      "arrived": 16,
+      "stddev": 53,
+      "count": 14,
+      "arrived": 14,
       "missed": 0,
-      "totalMs": 304
+      "totalMs": 307
     },
     "05: burst DELETE": {
       "min": 1,
-      "max": 208,
+      "max": 206,
       "avg": 13,
       "median": 1,
       "p90": 1,
-      "stddev": 49,
+      "stddev": 48,
       "count": 17,
       "deleted": 17,
       "missed": 0,
-      "totalMs": 309
+      "totalMs": 303
     },
     "06: INSERT→DELETE race": {
       "pass": true,
@@ -61,14 +61,14 @@
     },
     "07: bulk 100개": {
       "arrived": 100,
-      "totalMs": 1032,
-      "insertMs": 15
+      "totalMs": 1019,
+      "insertMs": 14
     },
     "08: 1초간격 편차": {
-      "min": 204,
+      "min": 205,
       "max": 218,
-      "avg": 210,
-      "median": 208,
+      "avg": 211,
+      "median": 214,
       "p90": 218,
       "stddev": 5,
       "count": 10,

@@ -8,7 +8,8 @@ import { getHolidayMap } from '../../utils/holidays'
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
 
 export function CalendarView() {
-  const { currentMonth, selectedDate, dayMap, alarmDays, loadMonth, selectDate } = useCalendarStore()
+  const { currentMonth, selectedDate, dayMap, alarmDays, loadMonth, selectDate, filterTag, filteredDays, setFilterTag } = useCalendarStore()
+  const [tagInput, setTagInput] = useState('')
 
   // 초기 로드 + 월 변경 시 로드
   useEffect(() => { loadMonth(currentMonth) }, [currentMonth])
@@ -86,24 +87,58 @@ export function CalendarView() {
   const noteCount = contextMenu ? (dayMap[contextMenu.dateStr]?.note_count ?? 0) : 0
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-white dark:bg-gray-900">
       <MonthNavigator />
 
-      {/* 요일 헤더 */}
-      <div className="grid grid-cols-7 px-5 pb-1 select-none">
+      {/* 태그 필터 */}
+      <div className="px-4 pb-1.5">
+        <div className="flex items-center gap-1.5">
+          <input
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && tagInput.trim()) {
+                setFilterTag(tagInput.trim())
+              }
+              if (e.key === 'Escape') {
+                setTagInput('')
+                setFilterTag(null)
+              }
+            }}
+            placeholder="태그 필터..."
+            className="flex-1 text-[10px] px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700
+                       bg-transparent text-gray-600 dark:text-gray-300 outline-none
+                       focus:border-accent-400 placeholder-gray-400"
+          />
+          {filterTag && (
+            <button
+              onClick={() => { setTagInput(''); setFilterTag(null) }}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-accent-100 dark:bg-accent-500/20
+                         text-accent-600 dark:text-accent-400 hover:bg-accent-200 transition-colors"
+            >
+              #{filterTag} ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 요일 헤더 - 구글 캘린더 스타일 */}
+      <div className="grid grid-cols-7 border-b border-gray-200 dark:border-gray-700 select-none">
         {WEEKDAYS.map((w, i) => (
           <div
             key={w}
-            className={`text-center text-[11px] font-medium py-1
-              ${i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}
+            className={`text-center text-[11px] font-medium py-1.5
+              border-r border-gray-200 dark:border-gray-700 last:border-r-0
+              ${i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-500 dark:text-gray-400'}
+              bg-gray-50/50 dark:bg-gray-900/50`}
           >
             {w}
           </div>
         ))}
       </div>
 
-      {/* 달력 그리드 */}
-      <div className="grid grid-cols-7 gap-1 px-4 flex-1">
+      {/* 달력 그리드 - 구글 캘린더 스타일 보더 그리드 */}
+      <div className="grid grid-cols-7 grid-rows-6 flex-1 overflow-hidden border-l border-gray-200 dark:border-gray-700">
         {cells.map((c) => (
           <CalendarCell
             key={c.dateStr}
@@ -115,6 +150,7 @@ export function CalendarView() {
             isCurrentMonth={c.isCurrentMonth}
             holiday={holidayMap[c.dateStr]}
             hasAlarm={alarmDays.has(c.dateStr)}
+            isFiltered={filterTag ? filteredDays.has(c.dateStr) : undefined}
             onClick={() => selectDate(c.dateStr)}
             onContextMenu={handleContextMenu}
           />

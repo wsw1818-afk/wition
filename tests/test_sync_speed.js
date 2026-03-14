@@ -142,7 +142,8 @@ async function test1_insertLatency() {
     await sleep(500) // 삭제 반영 대기
   }
 
-  const s = stats(times.filter(t => t > 0))
+  const valid = times.filter(t => t >= 0)
+  const s = stats(valid)
   log(`  INSERT 통계: avg=${s.avg}ms, median=${s.median}ms, p90=${s.p90}ms, min=${s.min}ms, max=${s.max}ms, stddev=${s.stddev}ms`)
   const timeouts = times.filter(t => t < 0).length
   assert(timeouts <= 3, `INSERT 타임아웃: ${timeouts}/${ROUNDS} (허용 ≤3)`)
@@ -184,7 +185,8 @@ async function test2_updateLatency() {
 
   await sb.from('note_item').delete().eq('id', id)
 
-  const s = stats(times.filter(t => t > 0))
+  const valid = times.filter(t => t >= 0)
+  const s = stats(valid)
   log(`  UPDATE 통계: avg=${s.avg}ms, median=${s.median}ms, p90=${s.p90}ms, min=${s.min}ms, max=${s.max}ms, stddev=${s.stddev}ms`)
   const timeouts = times.filter(t => t < 0).length
   assert(timeouts <= 3, `UPDATE 타임아웃: ${timeouts}/${ROUNDS} (허용 ≤3)`)
@@ -221,7 +223,8 @@ async function test3_deleteLatency() {
     await sleep(300)
   }
 
-  const s = stats(times.filter(t => t > 0))
+  const valid = times.filter(t => t >= 0)
+  const s = stats(valid)
   log(`  DELETE 통계: avg=${s.avg}ms, median=${s.median}ms, p90=${s.p90}ms, min=${s.min}ms, max=${s.max}ms, stddev=${s.stddev}ms`)
   const timeouts = times.filter(t => t < 0).length
   assert(timeouts <= 3, `DELETE 타임아웃: ${timeouts}/${ROUNDS} (허용 ≤3)`)
@@ -262,12 +265,12 @@ async function test4_burstInsert() {
   }
   const allDone = Date.now() - startTime
 
-  const arrived = arrivals.filter(t => t > 0).length
+  const arrived = arrivals.filter(t => t >= 0).length
   const missed = arrivals.filter(t => t < 0).length
   log(`  도착: ${arrived}/${COUNT}, 미도착: ${missed}, 총 시간: ${allDone}ms`)
 
   if (arrived > 0) {
-    const s = stats(arrivals.filter(t => t > 0))
+    const s = stats(arrivals.filter(t => t >= 0))
     log(`  개별 통계: avg=${s.avg}ms, max=${s.max}ms, stddev=${s.stddev}ms`)
     results['04: burst INSERT'] = { ...s, arrived, missed, totalMs: allDone }
   }
@@ -321,12 +324,12 @@ async function test5_burstDelete() {
   }
   const allDone = Date.now() - startTime
 
-  const deleted = deletions.filter(t => t > 0).length
+  const deleted = deletions.filter(t => t >= 0).length
   const missed = deletions.filter(t => t < 0).length
   log(`  반영: ${deleted}/${COUNT}, 미반영: ${missed}, 총 시간: ${allDone}ms`)
 
   if (deleted > 0) {
-    const s = stats(deletions.filter(t => t > 0))
+    const s = stats(deletions.filter(t => t >= 0))
     log(`  개별 통계: avg=${s.avg}ms, max=${s.max}ms, stddev=${s.stddev}ms`)
     results['05: burst DELETE'] = { ...s, deleted, missed, totalMs: allDone }
   }
@@ -456,9 +459,9 @@ async function test8_intervalConsistency() {
     await sleep(1000) // 1초 간격
   }
 
-  const valid = times.filter(t => t > 0)
-  if (valid.length > 0) {
-    const s = stats(valid)
+  const validTimes = times.filter(t => t >= 0)
+  if (validTimes.length > 0) {
+    const s = stats(validTimes)
     log(`  편차 통계: avg=${s.avg}ms, stddev=${s.stddev}ms, min=${s.min}ms, max=${s.max}ms`)
     log(`  편차율: ${((s.stddev / s.avg) * 100).toFixed(0)}% (stddev/avg)`)
     assert(s.stddev <= s.avg * 2, `편차: stddev=${s.stddev}ms ≤ 2×avg=${s.avg * 2}ms`)

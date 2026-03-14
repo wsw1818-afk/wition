@@ -27,6 +27,9 @@ interface SearchActions {
 
 export type SearchStore = SearchState & SearchActions
 
+// race condition 방지: 마지막 검색 요청만 반영
+let _searchSeq = 0
+
 export const useSearchStore = create<SearchStore>((set, get) => ({
   isOpen: false,
   query: '',
@@ -44,15 +47,18 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
       return
     }
 
+    const seq = ++_searchSeq
     set({ query, loading: true })
     try {
       const results = await window.api.search(trimmed)
+      // stale 응답 무시
+      if (seq !== _searchSeq) return
       set({ results })
     } catch (err) {
       console.error('search:', err)
-      set({ results: [] })
+      if (seq === _searchSeq) set({ results: [] })
     } finally {
-      set({ loading: false })
+      if (seq === _searchSeq) set({ loading: false })
     }
   },
 

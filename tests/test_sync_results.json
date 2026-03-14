@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-12T05:04:29.273Z",
+  "timestamp": "2026-03-13T03:41:09.742Z",
   "results": {
     "Realtime 구독": {
       "pass": true
@@ -31,14 +31,14 @@
     },
     "데이터 정합성": {
       "pass": true,
-      "server": 216,
-      "pc": 216,
+      "server": 1,
+      "pc": 1,
       "diff": 0
     },
     "핑퐁 안정성": {
       "pass": true,
-      "before": 221,
-      "after": 221
+      "before": 6,
+      "after": 6
     }
   },
   "passed": 9,

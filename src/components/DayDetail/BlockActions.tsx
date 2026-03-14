@@ -4,12 +4,31 @@ interface Props {
   item: NoteItem
   onDelete: () => void
   onTogglePin: () => void
+  onEncrypt?: () => void
+  encrypted?: boolean
+  onCopyMove?: () => void
 }
 
 /** 블록 우상단 액션 버튼 (hover 시 표시) — 공통 컴포넌트 */
-export function BlockActions({ item, onDelete, onTogglePin }: Props) {
+export function BlockActions({ item, onDelete, onTogglePin, onEncrypt, encrypted, onCopyMove }: Props) {
   return (
     <div className="absolute right-1 top-1 hidden group-hover:flex gap-0.5">
+      {onCopyMove && (
+        <ActionBtn onClick={onCopyMove} title="복사/이동">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+          </svg>
+        </ActionBtn>
+      )}
+      {onEncrypt && (
+        <ActionBtn
+          onClick={onEncrypt}
+          title={encrypted ? '잠금 해제' : '잠금'}
+        >
+          <span className="text-[11px]">{encrypted ? '🔓' : '🔒'}</span>
+        </ActionBtn>
+      )}
       <ActionBtn
         onClick={onTogglePin}
         title={item.pinned ? '고정 해제' : '고정'}

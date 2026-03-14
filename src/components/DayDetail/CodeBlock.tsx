@@ -11,11 +11,12 @@ interface Props {
   onTagsChange: (tags: string[]) => void
   onDelete: () => void
   onTogglePin: () => void
+  onCopyMove?: () => void
 }
 
 const LANGUAGES = ['text', 'javascript', 'typescript', 'python', 'html', 'css', 'json', 'sql', 'bash', 'java', 'c', 'cpp', 'go', 'rust']
 
-export function CodeBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin }: Props) {
+export function CodeBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin, onCopyMove }: Props) {
   const data = parseCodeBlock(item.content)
   const [code, setCode] = useState(data.code)
   const [language, setLanguage] = useState(data.language)
@@ -134,7 +135,7 @@ export function CodeBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin 
       </div>
 
       <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
-      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} />
+      <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>
   )
 }

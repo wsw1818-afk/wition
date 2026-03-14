@@ -76,6 +76,26 @@ const api = {
     return () => { ipcRenderer.removeListener('sync:status', handler) }
   },
 
+  // ── 토글 블록 상태 ──
+  getToggleStates:  () => ipcRenderer.invoke('db:getToggleStates') as Promise<Record<string, boolean>>,
+  setToggleState:   (blockId: string, open: boolean) => ipcRenderer.invoke('db:setToggleState', blockId, open),
+
+  // ── 마크다운 내보내기 ──
+  exportMarkdown:   (dayId?: string) => ipcRenderer.invoke('app:exportMarkdown', dayId) as Promise<string | null>,
+
+  // ── 동기화 히스토리 ──
+  getSyncHistory:   () => ipcRenderer.invoke('sync:getHistory') as Promise<Array<{ timestamp: number; pulled: number; pushed: number; cleaned: number; duration: number }>>,
+
+  // ── 마지막 백업 시간 ──
+  getLastBackupAt:  () => ipcRenderer.invoke('app:getLastBackupAt') as Promise<number>,
+
+  // ── 백업 실패 이벤트 ──
+  onBackupFailed: (cb: (error: string) => void) => {
+    const handler = (_e: unknown, error: string) => cb(error)
+    ipcRenderer.on('backup:failed', handler)
+    return () => { ipcRenderer.removeListener('backup:failed', handler) }
+  },
+
   // ── 알람 ──
   getAlarms:          (dayId: string) => ipcRenderer.invoke('db:getAlarms', dayId),
   upsertAlarm:        (alarm: unknown) => ipcRenderer.invoke('db:upsertAlarm', alarm),
@@ -114,6 +134,44 @@ const api = {
   onedriveSetEnabled:(enabled: boolean) => ipcRenderer.invoke('onedrive:setEnabled', enabled) as Promise<{ ok: boolean }>,
   onedriveExport:    () => ipcRenderer.invoke('onedrive:export') as Promise<{ ok: boolean; error?: string }>,
   onedriveImport:    () => ipcRenderer.invoke('onedrive:import') as Promise<{ ok: boolean; error?: string }>,
+
+  // ── Realtime 상태 ──
+  getRealtimeStatus: () => ipcRenderer.invoke('sync:getRealtimeStatus') as Promise<'connected' | 'disconnected' | 'reconnecting'>,
+
+  // ── 동기화 충돌 알림 ──
+  onSyncConflict: (cb: (msg: string) => void) => {
+    const handler = (_e: unknown, msg: string) => cb(msg)
+    ipcRenderer.on('sync:conflict', handler)
+    return () => { ipcRenderer.removeListener('sync:conflict', handler) }
+  },
+
+  // ── 태그 필터 ──
+  getNoteDaysWithTag: (yearMonth: string, tag: string) => ipcRenderer.invoke('db:getNoteDaysWithTag', yearMonth, tag),
+
+  // ── 템플릿 ──
+  getTemplates:     () => ipcRenderer.invoke('db:getTemplates'),
+  upsertTemplate:   (template: unknown) => ipcRenderer.invoke('db:upsertTemplate', template),
+  deleteTemplate:   (id: string) => ipcRenderer.invoke('db:deleteTemplate', id),
+  applyTemplate:    (templateId: string, dayId: string) => ipcRenderer.invoke('db:applyTemplate', templateId, dayId),
+
+  // ── PIN 잠금 ──
+  getPinEnabled:  () => ipcRenderer.invoke('app:getPinEnabled') as Promise<boolean>,
+  setPin:         (pin: string | null) => ipcRenderer.invoke('app:setPin', pin) as Promise<{ ok: boolean }>,
+  verifyPin:      (pin: string) => ipcRenderer.invoke('app:verifyPin', pin) as Promise<{ ok: boolean }>,
+
+  // ── 통계 ──
+  getMonthlyStats:  (yearMonth: string) => ipcRenderer.invoke('db:getMonthlyStats', yearMonth) as Promise<Array<{ day: string; count: number }>>,
+  getMoodStats:     (yearMonth: string) => ipcRenderer.invoke('db:getMoodStats', yearMonth) as Promise<Array<{ mood: string; count: number }>>,
+  getTagStats:      () => ipcRenderer.invoke('db:getTagStats') as Promise<Array<{ tag: string; count: number }>>,
+
+  // ── 반복 메모 ──
+  getRecurringBlocks:    () => ipcRenderer.invoke('db:getRecurringBlocks') as Promise<Array<{ id: string; type: string; content: string; repeat: string; day_of_week: number; created_at: number }>>,
+  upsertRecurringBlock:  (block: { id: string; type: string; content: string; repeat: string; day_of_week: number; created_at: number }) => ipcRenderer.invoke('db:upsertRecurringBlock', block) as Promise<boolean>,
+  deleteRecurringBlock:  (id: string) => ipcRenderer.invoke('db:deleteRecurringBlock', id) as Promise<boolean>,
+
+  // ── 메모 암호화 ──
+  encryptBlock:     (id: string, password: string) => ipcRenderer.invoke('db:encryptBlock', id, password) as Promise<boolean>,
+  decryptBlock:     (id: string, password: string) => ipcRenderer.invoke('db:decryptBlock', id, password) as Promise<string | null>,
 
   // ── 윈도우 컨트롤 (frameless) ──
   minimize: () => ipcRenderer.send('win:minimize'),

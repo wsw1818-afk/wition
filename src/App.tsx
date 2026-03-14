@@ -4,29 +4,41 @@ import { CalendarView } from './components/Calendar/CalendarView'
 import { DayDetailView } from './components/DayDetail/DayDetailView'
 import { SearchPanel } from './components/Search/SearchPanel'
 import { HelpPanel } from './components/common/HelpPanel'
+import { StatsPanel } from './components/Stats/StatsPanel'
+import { RecurringPanel } from './components/DayDetail/RecurringPanel'
 import { LoginScreen } from './components/auth/LoginScreen'
+import { ToastContainer, showToast } from './components/common/Toast'
+import { PinLock } from './components/common/PinLock'
 import { useCalendarStore } from './stores/calendarStore'
 import { useDayStore } from './stores/dayStore'
 import { useSearchStore } from './stores/searchStore'
+import { useHistoryStore } from './stores/historyStore'
 import type { AuthUser } from './types'
 
 export default function App() {
   const [authChecking, setAuthChecking] = useState(true)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [pinLocked, setPinLocked] = useState(false)
 
-  // 앱 시작 시: 자동 로그인 설정이 켜져있으면 세션 확인, 아니면 로그인 화면
+  // 앱 시작 시: PIN 잠금 확인 + 자동 로그인
   useEffect(() => {
-    window.api.authGetAutoLogin().then(async (autoLogin) => {
+    (async () => {
+      try {
+        const pinEnabled = await window.api.getPinEnabled()
+        if (pinEnabled) setPinLocked(true)
+      } catch {}
+
+      const autoLogin = await window.api.authGetAutoLogin().catch(() => false)
       if (autoLogin) {
         try {
           const session = await window.api.authGetSession()
           if (session.authenticated && session.user) {
             setAuthUser(session.user)
           }
-        } catch { /* 세션 확인 실패 → 로그인 화면 */ }
+        } catch {}
       }
       setAuthChecking(false)
-    }).catch(() => setAuthChecking(false))
+    })()
   }, [])
 
   // 로그인 전 로딩 화면
@@ -39,6 +51,11 @@ export default function App() {
         </div>
       </div>
     )
+  }
+
+  // PIN 잠금 화면 (5-1)
+  if (pinLocked) {
+    return <PinLock onUnlock={() => setPinLocked(false)} />
   }
 
   // 로그인 안 됐으면 로그인 화면
@@ -62,6 +79,8 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   const [autoBackup, setAutoBackup] = useState(true)
   const [backupPath, setBackupPath] = useState('')
   const [showHelp, setShowHelp] = useState(false)
+  const [showStats, setShowStats] = useState(false)
+  const [showRecurring, setShowRecurring] = useState(false)
   const [calendarWidth, setCalendarWidth] = useState(420)
   const calendarWidthRef = useRef(420)
   const isDragging = useRef(false)
@@ -71,6 +90,8 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   const [onedrivePath, setOnedrivePath] = useState('')
   const [onedriveEnabled, setOnedriveEnabled] = useState(false)
   const [initialSyncDone, setInitialSyncDone] = useState(false)
+  const [syncHistory, setSyncHistory] = useState<Array<{ timestamp: number; pulled: number; pushed: number; cleaned: number; duration: number }>>([])
+  const [lastBackupAt, setLastBackupAt] = useState(0)
 
   const selectDate = useCalendarStore((s) => s.selectDate)
 
@@ -135,28 +156,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
     return unsub
   }, [currentMonth, loadMonth, initialSyncDone])
 
-  // 방법2: executeJavaScript → window 이벤트 (IPC 우회, 확실한 방법)
-  useEffect(() => {
-    // 현재 dayId를 window에 노출 (디버그용)
-    const state = useDayStore.getState()
-    ;(window as any).__dayStore_dayId = state.dayId || 'none'
-  })
-
-  useEffect(() => {
-    const handler = () => {
-      const dayId = useDayStore.getState().dayId
-      console.log('[sync-refresh] window 이벤트 수신 — dayId:', dayId)
-      ;(window as any).__syncRefreshCount = ((window as any).__syncRefreshCount || 0) + 1
-      loadMonth(currentMonth)
-      if (dayId) {
-        useDayStore.getState().load(dayId).then(() => {
-          console.log('[sync-refresh] load 완료 — items:', useDayStore.getState().items.length)
-        })
-      }
-    }
-    window.addEventListener('sync-refresh', handler)
-    return () => window.removeEventListener('sync-refresh', handler)
-  }, [currentMonth, loadMonth])
+  // sync-refresh window 이벤트는 sync:done IPC와 중복되므로 제거됨 (IPC만 사용)
 
   // 초기 다크모드 감지 + 저장 경로 로드
   useEffect(() => {
@@ -179,6 +179,42 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
       setOnedriveEnabled(cfg.enabled)
       setOnedrivePath(cfg.path)
     })
+    window.api.getLastBackupAt().then(setLastBackupAt)
+  }, [])
+
+  // 설정 패널 열 때 동기화 히스토리 + 백업 시간 새로고침
+  useEffect(() => {
+    if (showSettings) {
+      window.api.getSyncHistory().then(setSyncHistory)
+      window.api.getLastBackupAt().then(setLastBackupAt)
+    }
+  }, [showSettings])
+
+  // Realtime 상태 (1-1)
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>('disconnected')
+  useEffect(() => {
+    window.api.getRealtimeStatus().then(setRealtimeStatus).catch(() => {})
+    const interval = setInterval(() => {
+      window.api.getRealtimeStatus().then(setRealtimeStatus).catch(() => {})
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // 동기화 충돌 토스트 (4-1)
+  useEffect(() => {
+    const unsub = window.api.onSyncConflict((msg: string) => {
+      showToast(`동기화 충돌: ${msg}`, 'warning')
+    })
+    return unsub
+  }, [])
+
+  // 백업 실패 이벤트 수신
+  useEffect(() => {
+    const unsub = window.api.onBackupFailed((error: string) => {
+      console.error('[backup:failed]', error)
+      showToast(`백업 실패: ${error}`, 'error')
+    })
+    return unsub
   }, [])
 
   const toggleDark = useCallback(() => {
@@ -225,6 +261,58 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
     document.addEventListener('mouseup', onUp)
   }, [])
 
+  // Undo/Redo 실행 함수
+  const executeUndo = useCallback(async () => {
+    const entry = useHistoryStore.getState().undo()
+    if (!entry) return
+    const dayId = entry.dayId
+    switch (entry.type) {
+      case 'add':
+        // 추가된 블록 삭제
+        if (entry.item) await window.api.deleteNoteItem(entry.item.id, dayId)
+        break
+      case 'delete':
+        // 삭제된 블록 복원
+        if (entry.item) await window.api.upsertNoteItem(entry.item)
+        break
+      case 'update':
+        // 이전 상태로 복원
+        if (entry.item) await window.api.upsertNoteItem(entry.item)
+        break
+      case 'reorder':
+        // 이전 순서로 복원
+        if (entry.prevOrder) await window.api.reorderNoteItems(dayId, entry.prevOrder)
+        break
+    }
+    // UI 새로고침
+    const currentDayId = useDayStore.getState().dayId
+    if (currentDayId === dayId) await useDayStore.getState().load(dayId)
+    loadMonth(currentMonth)
+  }, [currentMonth, loadMonth])
+
+  const executeRedo = useCallback(async () => {
+    const entry = useHistoryStore.getState().redo()
+    if (!entry) return
+    const dayId = entry.dayId
+    switch (entry.type) {
+      case 'add':
+        if (entry.item) await window.api.upsertNoteItem(entry.item)
+        break
+      case 'delete':
+        if (entry.item) await window.api.deleteNoteItem(entry.item.id, dayId)
+        break
+      case 'update':
+        if (entry.newItem) await window.api.upsertNoteItem(entry.newItem)
+        break
+      case 'reorder':
+        if (entry.newOrder) await window.api.reorderNoteItems(dayId, entry.newOrder)
+        break
+    }
+    const currentDayId = useDayStore.getState().dayId
+    if (currentDayId === dayId) await useDayStore.getState().load(dayId)
+    loadMonth(currentMonth)
+  }, [currentMonth, loadMonth])
+
   // 전역 키보드 단축키
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
@@ -240,10 +328,20 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
         e.preventDefault()
         toggleDark()
       }
+      // Undo: Ctrl+Z
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        executeUndo()
+      }
+      // Redo: Ctrl+Shift+Z 또는 Ctrl+Y
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey) || (e.key === 'Z' && e.shiftKey))) {
+        e.preventDefault()
+        executeRedo()
+      }
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [goToToday, toggleDark])
+  }, [goToToday, toggleDark, executeUndo, executeRedo])
 
   async function handleChangeDataPath() {
     const newPath = await window.api.changeDataPath()
@@ -306,6 +404,12 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
       {/* 도움말 패널 (오버레이) */}
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
 
+      {/* 통계 패널 (오버레이) */}
+      {showStats && <StatsPanel onClose={() => setShowStats(false)} />}
+
+      {/* 반복 메모 패널 (오버레이) */}
+      {showRecurring && <RecurringPanel onClose={() => setShowRecurring(false)} />}
+
       <div className="flex-1 flex overflow-hidden relative">
         {/* 검색 패널 (오버레이) */}
         <SearchPanel />
@@ -330,6 +434,18 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                 {darkMode ? '☀️ 라이트 모드' : '🌙 다크 모드'}
               </button>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowRecurring(true)}
+                  className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  반복
+                </button>
+                <button
+                  onClick={() => setShowStats(true)}
+                  className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  통계
+                </button>
                 <button
                   onClick={() => setShowHelp(true)}
                   className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
@@ -415,6 +531,11 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                     <span className="text-[11px] text-gray-500 dark:text-gray-400">자동 백업 (30분마다)</span>
                   </label>
                   <p className="text-[11px] text-gray-600 dark:text-gray-300 break-all leading-relaxed">{backupPath}</p>
+                  {lastBackupAt > 0 && (
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                      마지막 백업: {new Date(lastBackupAt).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  )}
                   <div className="flex gap-2">
                     <SettingsBtn onClick={async () => {
                       const newPath = await window.api.changeBackupPath()
@@ -422,6 +543,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                     }}>백업 경로 변경</SettingsBtn>
                     <SettingsBtn onClick={async () => {
                       await window.api.runBackupNow()
+                      await window.api.getLastBackupAt().then(setLastBackupAt)
                       alert('백업 완료!')
                     }}>지금 백업</SettingsBtn>
                   </div>
@@ -443,16 +565,42 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                        '오프라인 (OneDrive 모드)'}
                     </span>
                   </div>
+                  {/* Realtime 상태 (1-1) */}
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      realtimeStatus === 'connected' ? 'bg-emerald-400' :
+                      realtimeStatus === 'reconnecting' ? 'bg-yellow-400 animate-pulse' :
+                      'bg-gray-300'
+                    }`} />
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                      Realtime: {realtimeStatus === 'connected' ? '연결됨' :
+                                 realtimeStatus === 'reconnecting' ? '재연결 중...' : '끊김'}
+                    </span>
+                  </div>
                   <SettingsBtn onClick={async () => {
                     setSyncStatus('syncing')
                     const res = await window.api.syncNow()
                     if (res.ok) {
                       setSyncStatus('online')
                       await loadMonth(currentMonth)
+                      window.api.getSyncHistory().then(setSyncHistory)
                     } else {
                       setSyncStatus(syncStatus === 'online' ? 'online' : 'offline')
                     }
                   }}>지금 동기화</SettingsBtn>
+                  {/* 동기화 기록 */}
+                  {syncHistory.length > 0 && (
+                    <div className="mt-1 space-y-0.5">
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">동기화 기록</p>
+                      {syncHistory.slice(-5).reverse().map((h, i) => (
+                        <div key={i} className="text-[10px] text-gray-400 dark:text-gray-500 flex gap-2">
+                          <span>{new Date(h.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>↓{h.pulled} ↑{h.pushed} 🗑{h.cleaned}</span>
+                          <span>{(h.duration / 1000).toFixed(1)}초</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* OneDrive DB 동기화 */}
@@ -506,6 +654,30 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
                   </div>
                 </div>
 
+                {/* PIN 잠금 (5-1) */}
+                <div className="space-y-1 pt-1 border-t border-gray-100 dark:border-gray-800">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">PIN 잠금</span>
+                    <SettingsBtn onClick={async () => {
+                      const enabled = await window.api.getPinEnabled()
+                      if (enabled) {
+                        if (confirm('PIN 잠금을 해제하시겠습니까?')) {
+                          await window.api.setPin(null)
+                          showToast('PIN 잠금이 해제되었습니다', 'info')
+                        }
+                      } else {
+                        const pin = prompt('새 PIN (4~6자리 숫자)')
+                        if (pin && /^\d{4,6}$/.test(pin)) {
+                          await window.api.setPin(pin)
+                          showToast('PIN이 설정되었습니다', 'success')
+                        } else if (pin) {
+                          showToast('PIN은 4~6자리 숫자여야 합니다', 'error')
+                        }
+                      }
+                    }}>{/* 비동기 상태라 간단히 */}PIN 설정</SettingsBtn>
+                  </div>
+                </div>
+
                 {/* 계정 */}
                 <div className="space-y-1 pt-1 border-t border-gray-100 dark:border-gray-800">
                   <div className="flex items-center gap-2">
@@ -547,6 +719,9 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
           </div>
         )}
       </div>
+
+      {/* 토스트 알림 (4-1) */}
+      <ToastContainer />
     </div>
   )
 }
