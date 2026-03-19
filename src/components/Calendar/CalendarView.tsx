@@ -138,7 +138,7 @@ export function CalendarView() {
       </div>
 
       {/* 달력 그리드 - 구글 캘린더 스타일 보더 그리드 */}
-      <div className="grid grid-cols-7 grid-rows-6 flex-1 overflow-hidden border-l border-gray-200 dark:border-gray-700">
+      <div className="grid grid-cols-7 grid-rows-6 flex-1 border-l border-gray-200 dark:border-gray-700 overflow-y-auto">
         {cells.map((c) => (
           <CalendarCell
             key={c.dateStr}

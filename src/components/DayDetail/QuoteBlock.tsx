@@ -54,7 +54,7 @@ export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
   }
 
   return (
-    <div className={`group relative rounded-lg px-3 py-2 transition-colors
+    <div className={`group relative rounded-lg px-3 py-1 transition-colors
       hover:bg-gray-50 dark:hover:bg-gray-800/50
       ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
@@ -66,7 +66,7 @@ export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
             onChange={(e) => { setText(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
             onBlur={save}
             onKeyDown={(e) => { if (e.key === 'Escape') save() }}
-            className="w-full bg-transparent text-sm text-gray-600 dark:text-gray-400 italic resize-none
+            className="w-full bg-transparent text-base text-gray-600 dark:text-gray-400 italic resize-none
                        outline-none leading-relaxed"
             rows={1}
             placeholder="인용문을 입력하세요..."
@@ -74,7 +74,7 @@ export function QuoteBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
         ) : (
           <div
             onClick={() => setEditing(true)}
-            className="text-sm text-gray-600 dark:text-gray-400 italic whitespace-pre-wrap leading-relaxed
+            className="text-base text-gray-600 dark:text-gray-400 italic whitespace-pre-wrap leading-relaxed
                        cursor-text min-h-[20px]"
           >
             {item.content || <span className="text-gray-300 dark:text-gray-600 not-italic">인용문을 입력하세요...</span>}

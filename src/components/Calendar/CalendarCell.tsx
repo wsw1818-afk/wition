@@ -64,54 +64,58 @@ export const CalendarCell = memo(function CalendarCell({
         ${isFiltered === true ? 'ring-2 ring-inset ring-accent-400' : ''}
         hover:bg-gray-50 dark:hover:bg-gray-800/50
       `}
-      style={{ minHeight: 0 }}
+      style={{ minHeight: 'auto' }}
     >
       {/* 날짜 숫자 - 좌상단 */}
       <div className="flex items-center gap-1 mb-0.5">
         <span className={`
-          text-xs leading-none font-medium
+          text-sm leading-none font-semibold
           ${isToday
-            ? 'bg-accent-500 text-white w-5 h-5 rounded-full flex items-center justify-center'
+            ? 'bg-accent-500 text-white w-6 h-6 rounded-full flex items-center justify-center'
             : dayNumberColor}
         `}>
           {day}
         </span>
         {hasAlarm && (
-          <span className="text-[8px] leading-none text-orange-400">🔔</span>
+          <span className="text-[10px] leading-none text-orange-400">🔔</span>
         )}
       </div>
 
       {/* 공휴일 이름 */}
       {shortHoliday && (
-        <span className="text-[8px] leading-tight text-red-400 dark:text-red-400 truncate max-w-full">
+        <span className="text-[10px] leading-tight text-red-400 dark:text-red-400 truncate max-w-full">
           {shortHoliday}
         </span>
       )}
 
       {/* 감정 이모지 */}
       {mood && (
-        <span className="text-[10px] leading-none mt-0.5">{mood}</span>
+        <span className="text-xs leading-none mt-0.5">{mood}</span>
       )}
 
-      {/* 메모 요약 - summary 있으면 컬러 바, 없으면 dot+개수 */}
+      {/* 메모 요약 - 각 메모를 줄별로 표시 (PC: 5줄) */}
       {count > 0 && summary && (
-        <div className="flex flex-col gap-[2px] w-full mt-0.5">
-          <div className={`
-            w-full rounded-sm px-1 py-[1px] text-[9px] leading-tight font-medium truncate
-            ${isSelected
-              ? 'bg-accent-500 text-white'
-              : 'bg-accent-100 dark:bg-accent-500/20 text-accent-700 dark:text-accent-300'}
-          `}>
-            {summary.slice(0, 20)}
-          </div>
-          {count > 1 && (
-            <div className={`
-              w-full rounded-sm px-1 py-[1px] text-[8px] leading-tight truncate
-              ${isSelected
-                ? 'bg-accent-400 text-white/80'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}
+        <div className="flex flex-col gap-[2px] w-full mt-0.5 min-w-0 overflow-hidden flex-1">
+          {summary.split('\n').slice(0, 5).map((line, i) => (
+            <div key={i} className={`
+              w-full rounded-sm px-1 py-[1px] text-[11px] leading-snug truncate
+              ${i === 0
+                ? (isSelected
+                    ? 'bg-accent-500 text-white font-medium'
+                    : 'bg-accent-100 dark:bg-accent-500/20 text-accent-700 dark:text-accent-300 font-medium')
+                : (isSelected
+                    ? 'bg-accent-400/60 text-white/80'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400')}
             `}>
-              +{count - 1}개 더
+              {line}
+            </div>
+          ))}
+          {summary.split('\n').length > 5 && (
+            <div className={`
+              text-[9px] leading-tight px-1
+              ${isSelected ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'}
+            `}>
+              +{summary.split('\n').length - 5}개 더
             </div>
           )}
         </div>
@@ -119,7 +123,7 @@ export const CalendarCell = memo(function CalendarCell({
       {count > 0 && !summary && (
         <div className="flex items-center gap-1 mt-0.5">
           <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white/70' : 'bg-accent-400'}`} />
-          <span className={`text-[9px] leading-none ${isSelected ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+          <span className={`text-[11px] leading-none ${isSelected ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
             {count}
           </span>
         </div>

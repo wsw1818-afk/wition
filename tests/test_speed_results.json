@@ -1,59 +1,59 @@
 {
-  "timestamp": "2026-03-13T03:48:04.489Z",
+  "timestamp": "2026-03-17T03:36:58.695Z",
   "results": {
     "01: INSERT 지연": {
-      "min": 203,
-      "max": 220,
-      "avg": 209,
-      "median": 207,
+      "min": 207,
+      "max": 216,
+      "avg": 213,
+      "median": 213,
       "p90": 215,
-      "stddev": 4,
+      "stddev": 2,
       "count": 30,
       "timeouts": 0
     },
     "02: UPDATE 지연": {
-      "min": 203,
-      "max": 226,
-      "avg": 209,
-      "median": 208,
+      "min": 207,
+      "max": 216,
+      "avg": 213,
+      "median": 214,
       "p90": 216,
-      "stddev": 5,
+      "stddev": 2,
       "count": 30,
       "timeouts": 0
     },
     "03: DELETE 지연": {
-      "min": 203,
-      "max": 218,
-      "avg": 209,
-      "median": 208,
+      "min": 209,
+      "max": 217,
+      "avg": 213,
+      "median": 214,
       "p90": 215,
-      "stddev": 4,
+      "stddev": 2,
       "count": 30,
       "timeouts": 0
     },
     "04: burst INSERT": {
-      "min": 1,
-      "max": 205,
-      "avg": 16,
+      "min": 0,
+      "max": 213,
+      "avg": 12,
       "median": 1,
-      "p90": 1,
-      "stddev": 53,
-      "count": 14,
-      "arrived": 14,
+      "p90": 2,
+      "stddev": 46,
+      "count": 20,
+      "arrived": 20,
       "missed": 0,
-      "totalMs": 307
+      "totalMs": 318
     },
     "05: burst DELETE": {
-      "min": 1,
+      "min": 0,
       "max": 206,
-      "avg": 13,
+      "avg": 11,
       "median": 1,
-      "p90": 1,
-      "stddev": 48,
-      "count": 17,
-      "deleted": 17,
+      "p90": 7,
+      "stddev": 45,
+      "count": 20,
+      "deleted": 20,
       "missed": 0,
-      "totalMs": 303
+      "totalMs": 314
     },
     "06: INSERT→DELETE race": {
       "pass": true,
@@ -61,20 +61,20 @@
     },
     "07: bulk 100개": {
       "arrived": 100,
-      "totalMs": 1019,
-      "insertMs": 14
+      "totalMs": 1026,
+      "insertMs": 16
     },
     "08: 1초간격 편차": {
-      "min": 205,
-      "max": 218,
-      "avg": 211,
-      "median": 214,
-      "p90": 218,
-      "stddev": 5,
+      "min": 212,
+      "max": 215,
+      "avg": 213,
+      "median": 213,
+      "p90": 215,
+      "stddev": 1,
       "count": 10,
-      "variationPct": 2
+      "variationPct": 0
     }
   },
-  "passed": 13,
+  "passed": 15,
   "total": 15
 }

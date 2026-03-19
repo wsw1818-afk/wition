@@ -1,61 +1,99 @@
-import { useState, useRef, KeyboardEvent } from 'react'
+import { useRef, KeyboardEvent, memo, useCallback } from 'react'
 
 interface Props {
   tags: string[]
   onChange: (tags: string[]) => void
 }
 
-export function TagInput({ tags, onChange }: Props) {
-  const [editing, setEditing] = useState(false)
-  const [inputValue, setInputValue] = useState('')
+export const TagInput = memo(function TagInput({ tags, onChange }: Props) {
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+  const tagsRef = useRef(tags)
+  tagsRef.current = tags
+
   const inputRef = useRef<HTMLInputElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const editingRef = useRef(false)
 
-  function startEditing() {
-    setEditing(true)
-    setTimeout(() => inputRef.current?.focus(), 0)
-  }
+  const showInput = useCallback(() => {
+    editingRef.current = true
+    const inp = inputRef.current
+    const btn = wrapperRef.current?.querySelector('[data-tag-btn]') as HTMLElement | null
+    if (inp) { inp.classList.remove('hidden') }
+    if (btn) btn.classList.add('hidden')
+    // 이벤트 루프 완료 후 포커스 — 부모 리렌더/이벤트 처리 완료 대기
+    requestAnimationFrame(() => {
+      if (inp && editingRef.current) inp.focus()
+    })
+  }, [])
 
-  function stopEditing() {
-    setEditing(false)
-    setInputValue('')
-  }
+  const hideInput = useCallback(() => {
+    editingRef.current = false
+    const inp = inputRef.current
+    const btn = wrapperRef.current?.querySelector('[data-tag-btn]') as HTMLElement | null
+    if (inp) { inp.classList.add('hidden'); inp.value = '' }
+    if (btn) btn.classList.remove('hidden')
+  }, [])
 
-  function addTag(tag: string) {
-    const trimmed = tag.trim().replace(/^#/, '') // # 접두사 제거
-    if (trimmed && !tags.includes(trimmed)) {
-      onChange([...tags, trimmed])
+  function commitAndClose() {
+    const val = inputRef.current?.value?.trim().replace(/^#/, '') || ''
+    if (val && !tagsRef.current.includes(val)) {
+      onChangeRef.current([...tagsRef.current, val])
     }
-    setInputValue('')
+    hideInput()
+  }
+
+  function addTagFromInput() {
+    const val = inputRef.current?.value?.trim().replace(/^#/, '') || ''
+    if (val && !tagsRef.current.includes(val)) {
+      onChangeRef.current([...tagsRef.current, val])
+    }
+    if (inputRef.current) inputRef.current.value = ''
   }
 
   function removeTag(tagToRemove: string) {
-    onChange(tags.filter((t) => t !== tagToRemove))
+    onChangeRef.current(tagsRef.current.filter((t) => t !== tagToRemove))
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter' || e.key === ' ' || e.key === ',') {
+    if (e.key === 'Enter' || e.key === ',') {
       e.preventDefault()
-      if (inputValue.trim()) {
-        addTag(inputValue)
-      }
-    } else if (e.key === 'Backspace' && !inputValue && tags.length > 0) {
-      // 입력값 없이 Backspace 시 마지막 태그 제거
-      removeTag(tags[tags.length - 1])
+      addTagFromInput()
+    } else if (e.key === 'Backspace' && !inputRef.current?.value && tagsRef.current.length > 0) {
+      removeTag(tagsRef.current[tagsRef.current.length - 1])
     } else if (e.key === 'Escape') {
-      stopEditing()
+      commitAndClose()
     }
   }
 
-  function handleBlur() {
-    if (inputValue.trim()) {
-      addTag(inputValue)
+  function handleBlur(e: React.FocusEvent<HTMLInputElement>) {
+    if (!editingRef.current) return
+    if (wrapperRef.current && e.relatedTarget && wrapperRef.current.contains(e.relatedTarget as Node)) {
+      return
     }
-    stopEditing()
+    // relatedTarget null = DOM 리플로우 blur → 포커스 복구
+    if (!e.relatedTarget) {
+      setTimeout(() => {
+        if (editingRef.current && inputRef.current && document.activeElement !== inputRef.current) {
+          inputRef.current.focus()
+        }
+      }, 0)
+      return
+    }
+    commitAndClose()
+  }
+
+  function handleWrapperClick(e: React.MouseEvent) {
+    e.stopPropagation()
+  }
+
+  function handleWrapperMouseDown(e: React.MouseEvent) {
+    // 부모 블록의 onClick/onMouseDown에서 setFocusedBlockIdx 호출 방지
+    e.stopPropagation()
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1 mt-1.5">
-      {/* 기존 태그 표시 */}
+    <div ref={wrapperRef} className="flex flex-wrap items-center gap-1 mt-1.5" onClick={handleWrapperClick} onMouseDown={handleWrapperMouseDown}>
       {tags.map((tag) => (
         <span
           key={tag}
@@ -75,27 +113,26 @@ export function TagInput({ tags, onChange }: Props) {
         </span>
       ))}
 
-      {/* 태그 추가 버튼 / 입력 필드 */}
-      {editing ? (
-        <input
-          ref={inputRef}
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onBlur={handleBlur}
-          placeholder="태그 입력..."
-          className="text-[10px] bg-transparent outline-none text-gray-600 dark:text-gray-300
-                     placeholder-gray-400 w-16"
-        />
-      ) : (
-        <button
-          onClick={startEditing}
-          className="text-[10px] text-gray-400 hover:text-accent-500 transition-colors"
-        >
-          + 태그
-        </button>
-      )}
+      <input
+        ref={inputRef}
+        type="text"
+        defaultValue=""
+        onKeyDown={handleKeyDown}
+        onBlur={handleBlur}
+        placeholder="태그 입력..."
+        className="hidden text-[10px] bg-transparent outline-none text-gray-600 dark:text-gray-300
+                   placeholder-gray-400 w-16"
+      />
+      <button
+        data-tag-btn
+        onClick={showInput}
+        className="text-[10px] text-gray-400 hover:text-accent-500 transition-colors"
+      >
+        + 태그
+      </button>
     </div>
   )
-}
+}, (prev, next) => {
+  if (prev.tags.length !== next.tags.length) return false
+  return prev.tags.every((t, i) => t === next.tags[i])
+})

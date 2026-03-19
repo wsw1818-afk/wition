@@ -162,9 +162,10 @@ export function SortableBlock({ item, onUpdate, onTagsChange, onDelete, onToggle
         />
       )}
 
-      {/* 저장 시간 */}
+      {/* 저장 시간 — 호버 시만 표시 */}
       <div className="absolute right-2 bottom-0.5
-                      text-[10px] text-gray-400 dark:text-gray-500 select-none pointer-events-none">
+                      text-[10px] text-gray-400 dark:text-gray-500 select-none pointer-events-none
+                      opacity-0 group-hover/drag:opacity-100 transition-opacity">
         {createdStr}{updatedStr ? ` (수정 ${updatedStr})` : ''}
       </div>
     </div>

@@ -34,19 +34,26 @@ interface AppConfig {
   authUser?: { id: string; email: string }
 }
 
-const CONFIG_FILE = join(getAppDataPath(), 'config.json')
+/* TEST_DB_PATH 환경변수: 별도 DB 경로 지정 (2대 PC 시뮬용) */
+const TEST_DB_PATH = process.env.TEST_DB_PATH || ''
+const CONFIG_DIR = TEST_DB_PATH ? join(TEST_DB_PATH, '..') : getAppDataPath()
+const CONFIG_FILE = join(CONFIG_DIR, TEST_DB_PATH ? 'config_test.json' : 'config.json')
 
 function loadConfig(): AppConfig {
   try {
     if (existsSync(CONFIG_FILE)) {
       const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
-      return { dataPath: join(getAppDataPath(), 'data'), ...raw }
+      const defaultDataPath = TEST_DB_PATH ? join(TEST_DB_PATH, '..') : join(getAppDataPath(), 'data')
+      return { dataPath: defaultDataPath, ...raw }
     }
   } catch { /* */ }
-  return { dataPath: join(getAppDataPath(), 'data') }
+  const dataPath = TEST_DB_PATH ? join(TEST_DB_PATH, '..') : join(getAppDataPath(), 'data')
+  return { dataPath }
 }
 
 function saveConfig(cfg: AppConfig): void {
+  const dir = join(CONFIG_FILE, '..')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8')
 }
 
@@ -54,10 +61,12 @@ let config = loadConfig()
 
 /* ─── DB 초기화 ─── */
 function openDatabase(): Database.Database {
-  if (!existsSync(config.dataPath)) {
-    mkdirSync(config.dataPath, { recursive: true })
+  // TEST_DB_PATH가 지정되면 해당 경로의 DB를 직접 사용
+  const dbDir = TEST_DB_PATH ? join(TEST_DB_PATH, '..') : config.dataPath
+  if (!existsSync(dbDir)) {
+    mkdirSync(dbDir, { recursive: true })
   }
-  const dbPath = join(config.dataPath, 'wition.db')
+  const dbPath = TEST_DB_PATH || join(config.dataPath, 'wition.db')
   console.log(`[TestServer] DB: ${dbPath}`)
   const database = new Database(dbPath)
   database.pragma('journal_mode = WAL')
@@ -173,6 +182,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (syncedAt > 0) { config.lastSyncAt = syncedAt; saveConfig(config) }
       res.end(JSON.stringify({ ok: true, pulled, pushed, cleaned }))
 
+    } else if (url === '/sync-reset' && req.method === 'POST') {
+      // 테스트용: lastSyncAt을 0으로 초기화 (새 PC 시뮬레이션)
+      config.lastSyncAt = 0
+      saveConfig(config)
+      syncLog('lastSyncAt 초기화 (새 PC 시뮬)')
+      res.end(JSON.stringify({ ok: true, lastSyncAt: 0 }))
+
     } else if (url.startsWith('/query') && req.method === 'GET') {
       const u = new URL(req.url!, `http://localhost:${TEST_PORT}`)
       const sql = u.searchParams.get('sql')
@@ -208,6 +224,25 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     } else if (url === '/realtime-reconnect' && req.method === 'POST') {
       Sync.reconnectRealtime()
       res.end(JSON.stringify({ ok: true }))
+
+    } else if (url === '/realtime-stop' && req.method === 'POST') {
+      Sync.stopRealtime()
+      res.end(JSON.stringify({ ok: true, realtime: 'stopped' }))
+
+    } else if (url === '/sync-status') {
+      res.end(JSON.stringify({
+        ok: true,
+        lastSyncAt: config.lastSyncAt || 0,
+        userId: Sync.getUserId(),
+        syncing: Sync.isSyncing(),
+        realtimeConnected: Sync.isRealtimeConnected()
+      }))
+
+    } else if (url === '/db-counts') {
+      const dayCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_day').get() as { cnt: number }).cnt
+      const itemCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_item').get() as { cnt: number }).cnt
+      const tombstoneCount = (db.prepare('SELECT COUNT(*) as cnt FROM deleted_items').get() as { cnt: number }).cnt
+      res.end(JSON.stringify({ ok: true, days: dayCount, items: itemCount, tombstones: tombstoneCount }))
 
     } else if (url === '/shutdown' && req.method === 'POST') {
       res.end(JSON.stringify({ ok: true, msg: 'shutting down' }))

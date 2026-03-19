@@ -48,7 +48,7 @@ export function ChecklistBlock({ item, onUpdate, onTagsChange, onDelete, onToggl
 
   return (
     <div
-      className={`group relative rounded-lg px-3 py-2 transition-colors
+      className={`group relative rounded-lg px-3 py-1 transition-colors
         hover:bg-gray-50 dark:hover:bg-gray-800/50
         ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
@@ -146,13 +146,13 @@ function ChecklistRow({
             if (e.key === 'Escape') setEditing(false)
             if (e.key === 'Backspace' && !entry.text) onRemove()
           }}
-          className="flex-1 text-sm bg-transparent outline-none text-gray-800 dark:text-gray-200"
+          className="flex-1 text-base bg-transparent outline-none text-gray-800 dark:text-gray-200"
           placeholder="항목 입력..."
         />
       ) : (
         <span
           onClick={() => setEditing(true)}
-          className={`flex-1 text-sm cursor-text leading-relaxed
+          className={`flex-1 text-base cursor-text leading-relaxed
             ${entry.done ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}
         >
           {entry.text || <span className="text-gray-300">항목 입력...</span>}

@@ -151,7 +151,7 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
       console.log('[sync:done IPC] 수신 — dayId:', dayId)
       if (!initialSyncDone) setInitialSyncDone(true)
       loadMonth(currentMonth)
-      if (dayId) useDayStore.getState().load(dayId)
+      if (dayId) useDayStore.getState().softReload(dayId)
     })
     return unsub
   }, [currentMonth, loadMonth, initialSyncDone])

@@ -90,7 +90,7 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
   }
 
   return (
-    <div className={`group relative rounded-lg px-3 py-2 transition-colors
+    <div className={`group relative rounded-lg px-3 py-1 transition-colors
       hover:bg-gray-50 dark:hover:bg-gray-800/50
       ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
@@ -117,13 +117,13 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) { saveTitle(); setOpen(true) }
                 if (e.key === 'Escape') saveTitle()
               }}
-              className="w-full bg-transparent text-sm font-medium text-gray-800 dark:text-gray-200 outline-none"
+              className="w-full bg-transparent text-base font-medium text-gray-800 dark:text-gray-200 outline-none"
               placeholder="토글 제목..."
             />
           ) : (
             <div
               onClick={() => setEditingTitle(true)}
-              className="text-sm font-medium text-gray-800 dark:text-gray-200 cursor-text min-h-[20px]"
+              className="text-base font-medium text-gray-800 dark:text-gray-200 cursor-text min-h-[20px]"
             >
               {data.title || <span className="text-gray-300 dark:text-gray-600">토글 제목...</span>}
             </div>
@@ -141,7 +141,7 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
               onChange={(e) => { setChildren(e.target.value); autoResize(e.target); autoSave(title, e.target.value) }}
               onBlur={saveBody}
               onKeyDown={(e) => { if (e.key === 'Escape') saveBody() }}
-              className="w-full bg-transparent text-sm text-gray-700 dark:text-gray-300 resize-none
+              className="w-full bg-transparent text-base text-gray-700 dark:text-gray-300 resize-none
                          outline-none leading-relaxed"
               rows={1}
               placeholder="토글 내용..."
@@ -149,7 +149,7 @@ export function ToggleBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePi
           ) : (
             <div
               onClick={() => setEditingBody(true)}
-              className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed
+              className="text-base text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed
                          cursor-text min-h-[20px]"
             >
               {data.children || <span className="text-gray-300 dark:text-gray-600">토글 내용을 입력하세요...</span>}

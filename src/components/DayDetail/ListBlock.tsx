@@ -59,7 +59,7 @@ export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
   const lines = (item.content || '').split('\n').filter(l => l.trim())
 
   return (
-    <div className={`group relative rounded-lg px-3 py-2 transition-colors
+    <div className={`group relative rounded-lg px-3 py-1 transition-colors
       hover:bg-gray-50 dark:hover:bg-gray-800/50
       ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
@@ -70,7 +70,7 @@ export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
           onChange={(e) => { setText(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
           onBlur={save}
           onKeyDown={(e) => { if (e.key === 'Escape') save() }}
-          className="w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 resize-none
+          className="w-full bg-transparent text-base text-gray-800 dark:text-gray-200 resize-none
                      outline-none leading-relaxed pl-5"
           rows={1}
           placeholder={isBulleted ? '목록 항목 (줄바꿈으로 구분)' : '번호 목록 (줄바꿈으로 구분)'}
@@ -80,7 +80,7 @@ export function ListBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
           {lines.length > 0 ? (
             <ul className={`space-y-0.5 ${isBulleted ? 'list-disc' : 'list-decimal'} list-inside`}>
               {lines.map((line, i) => (
-                <li key={i} className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed">{line}</li>
+                <li key={i} className="text-base text-gray-800 dark:text-gray-200 leading-relaxed">{line}</li>
               ))}
             </ul>
           ) : (

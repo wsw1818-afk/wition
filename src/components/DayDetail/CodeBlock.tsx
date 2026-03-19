@@ -118,7 +118,7 @@ export function CodeBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
             onChange={(e) => { setCode(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
             onBlur={save}
             onKeyDown={handleKeyDown}
-            className="w-full bg-transparent text-sm text-green-400 font-mono resize-none
+            className="w-full bg-transparent text-base text-green-400 font-mono resize-none
                        outline-none leading-relaxed px-3 py-2 min-h-[60px]"
             placeholder="코드를 입력하세요..."
             spellCheck={false}
@@ -126,7 +126,7 @@ export function CodeBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
         ) : (
           <pre
             onClick={() => setEditing(true)}
-            className="text-sm text-green-400 font-mono whitespace-pre-wrap leading-relaxed
+            className="text-base text-green-400 font-mono whitespace-pre-wrap leading-relaxed
                        cursor-text px-3 py-2 min-h-[40px]"
           >
             {data.code || <span className="text-gray-600">코드를 입력하세요...</span>}

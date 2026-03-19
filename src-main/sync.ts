@@ -408,27 +408,47 @@ function applyRealtimeUpsert(db: Database.Database, table: string, row: Record<s
   }
 }
 
-/** 첫 번째 아이템에서 summary 텍스트 추출 */
+/** 모든 아이템에서 summary 텍스트 추출 (각 메모 첫 줄, 최대 10개) */
 function extractSummary(db: Database.Database, dayId: string): string | null {
-  const first = db.prepare(
-    'SELECT content, type FROM note_item WHERE day_id = ? ORDER BY order_index ASC LIMIT 1'
-  ).get(dayId) as { content: string; type: string } | undefined
-  if (!first?.content) return null
-  if (first.type === 'checklist') {
+  const allItems = db.prepare(
+    'SELECT content, type FROM note_item WHERE day_id = ? ORDER BY order_index ASC LIMIT 10'
+  ).all(dayId) as Array<{ content: string; type: string }>
+  if (allItems.length === 0) return null
+
+  const lines: string[] = []
+  for (const item of allItems) {
+    const line = extractOneLine(item.content, item.type)
+    if (line) lines.push(line)
+  }
+  return lines.join('\n').slice(0, 300) || null
+}
+
+/** 아이템 content에서 한 줄 요약 텍스트 추출 */
+function extractOneLine(content: string, type: string): string | null {
+  if (!content) return null
+  if (type === 'checklist') {
     try {
-      const items = JSON.parse(first.content) as Array<{ text: string }>
-      return items.map(i => i.text).join(', ').slice(0, 80) || null
+      const items = JSON.parse(content) as Array<{ text: string; done?: boolean }>
+      const first = items[0]
+      return first ? `☐ ${first.text}`.slice(0, 50) : null
     } catch { return null }
   }
-  return first.content
+  if (type === 'image') {
+    try {
+      const imgData = JSON.parse(content) as { caption?: string }
+      return imgData.caption ? `🖼 ${imgData.caption}`.slice(0, 50) : '🖼 이미지'
+    } catch { return '🖼 이미지' }
+  }
+  if (type === 'divider') return '───'
+  return content
     .replace(/\[file:.+?\]/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
     .replace(/`(.+?)`/g, '$1')
-    .replace(/\n/g, ' ')
+    .split('\n')[0]
     .trim()
-    .slice(0, 80) || null
+    .slice(0, 50) || null
 }
 
 /** note_item 변경 시 해당 day의 note_count/has_notes/summary 갱신 */
@@ -466,7 +486,10 @@ function recalcAllDayCounts(db: Database.Database): void {
     const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day.id) as { cnt: number }
     if (row.cnt === 0 && !day.mood) {
       db.prepare('DELETE FROM note_day WHERE id = ?').run(day.id)
-    } else if (row.cnt !== day.note_count || (row.cnt > 0 && !(db.prepare('SELECT summary FROM note_day WHERE id = ?').get(day.id) as { summary: string | null } | undefined)?.summary)) {
+    } else if (row.cnt !== day.note_count || (row.cnt > 0 && (() => {
+      const s = (db.prepare('SELECT summary FROM note_day WHERE id = ?').get(day.id) as { summary: string | null } | undefined)?.summary
+      return !s || (row.cnt > 1 && !s.includes('\n'))
+    })())) {
       const summary = row.cnt > 0 ? extractSummary(db, day.id) : null
       db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = ? WHERE id = ?')
         .run(row.cnt, row.cnt > 0 ? 1 : 0, summary, day.id)
@@ -662,8 +685,10 @@ export async function fullSync(
 
     // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제
     // push 후 실행하므로 오프라인 작성 메모는 이미 서버에 올라간 상태
+    // 첫 sync에서도 실행 필수 (OneDrive DB 복제로 삭제된 메모가 로컬에 남아있을 수 있음)
     let cleaned = 0
-    if (authenticated && remoteItems.length > 0) {
+    const localItemCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_item').get() as { cnt: number }).cnt
+    if (authenticated && (remoteItems.length > 0 || localItemCount > 0)) {
       // push로 새로 올린 데이터를 포함하여 서버 상태 재조회
       const [{ data: freshDaysData }, { data: freshItemsData }] = await Promise.all([
         supabase.from('note_day').select('*').eq('user_id', currentUserId),
@@ -832,6 +857,8 @@ function cleanDeletedFromRemote(
     // 보호 대상: lastSyncAt 이후에 로컬에서 생성/변경된 아이템 (아직 push 안 됐을 수 있음)
     // OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각
     // → created_at 또는 updated_at이 lastSyncAt 이후면 보호
+    // ⚠️ 첫 sync(lastSyncAt 없음): 서버 = SSOT → 보호 없이 서버에 없는 건 모두 삭제
+    const isFirstSync = !lastSyncAt || lastSyncAt === 0
     const protectAfter = lastSyncAt ?? 0
     const localItems = db.prepare('SELECT id, day_id, created_at, updated_at FROM note_item').all() as Array<{ id: string; day_id: string; created_at: number; updated_at: number }>
     let deleted = 0
@@ -845,6 +872,15 @@ function cleanDeletedFromRemote(
     db.transaction(() => {
       for (const li of localItems) {
         if (!remoteItemIds.has(li.id)) {
+          // 첫 sync: 서버가 SSOT → 서버에 없는 로컬 아이템은 무조건 삭제
+          // (OneDrive DB 복제로 삭제된 메모가 로컬에 남아있을 수 있음)
+          if (isFirstSync) {
+            db.prepare('DELETE FROM note_item WHERE id = ?').run(li.id)
+            if (!tombstoneSet.has(`note_item:${li.id}`)) addTombstone(db, 'note_item', li.id)
+            affectedDayIds.add(li.day_id)
+            deleted++
+            continue
+          }
           // tombstone에 있으면 이미 삭제 확인됨 → 무조건 삭제
           const hasTombstone = tombstoneSet.has(`note_item:${li.id}`)
           if (!hasTombstone && (li.created_at > protectAfter || li.updated_at > protectAfter)) {
@@ -1033,10 +1069,12 @@ async function pushChanges(
   // - created_at > lastSyncAt → 이번 세션에서 새로 만든 것 → push
   // - created_at <= lastSyncAt → 다른 기기에서 삭제된 것 → push 안 함
   // note_day는 캐시 테이블 → 서버에 없으면 항상 push (삭제 복원 위험 없음)
+  const isFirstSync = !lastSyncAt || lastSyncAt === 0
   const daysToUpdate = allDays
     .filter(ld => {
       const ts = remoteDayMap.get(ld.id as string)
       if (ts === undefined) {
+        if (isFirstSync) return false  // 첫 sync: 서버 SSOT
         return true
       }
       if ((ld.updated_at as number) > ts) {
@@ -1049,6 +1087,12 @@ async function pushChanges(
     .filter(li => {
       const ts = remoteItemMap.get(li.id as string)
       if (ts === undefined) {
+        // 첫 sync(lastSyncAt 없음): 서버가 SSOT → 서버에 없는 로컬 아이템은 push 금지
+        // (OneDrive DB 복제 등으로 삭제된 메모가 로컬에 남아있을 수 있음)
+        if (isFirstSync) {
+          slog(`[Sync] 첫 sync: 서버에 없는 로컬 아이템 스킵 (${li.id})`)
+          return false
+        }
         // 서버에 없는 아이템: created_at 또는 updated_at이 lastSyncAt 이후면 push
         // (OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각)
         if ((li.created_at as number) > protectAfter || (li.updated_at as number) > protectAfter) {
@@ -1070,6 +1114,7 @@ async function pushChanges(
     .filter(la => {
       const ts = remoteAlarmMap.get(la.id as string)
       if (ts === undefined) {
+        if (isFirstSync) return false  // 첫 sync: 서버 SSOT
         // OneDrive 병합으로 들어온 알람도 push되도록 updated_at도 체크
         return (la.created_at as number) > protectAfter || (la.updated_at as number) > protectAfter
       }

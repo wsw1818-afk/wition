@@ -122,10 +122,10 @@ export function DayDetailView() {
     if (day) patchDay(day)
   }
 
-  async function handleTagsChange(id: string, tags: string[]) {
+  const handleTagsChange = useCallback(async (id: string, tags: string[]) => {
     const day = await update(id, { tags: JSON.stringify(tags) })
     if (day) patchDay(day)
-  }
+  }, [update, patchDay])
 
   // 선택 모드 토글
   function toggleSelectItem(id: string) {
@@ -220,7 +220,7 @@ export function DayDetailView() {
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100">{dateLabel}</h2>
+          <h2 className="text-base font-semibold text-gray-800 dark:text-gray-100">{dateLabel}</h2>
         </div>
         <div className="flex items-center gap-1">
           {/* 선택 모드 토글 (2-3) */}
@@ -279,7 +279,7 @@ export function DayDetailView() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-              <div className="flex flex-col gap-1.5 py-1">
+              <div className="flex flex-col gap-1 py-1">
                 {items.map((item, idx) => (
                   <div key={item.id} className="flex items-start gap-1" onClick={() => setFocusedBlockIdx(idx)}>
                     {selectMode && (

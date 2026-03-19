@@ -420,42 +420,22 @@ export function refreshDayCache_external(db: Database.Database, dayId: string, n
 
 /** NoteDay의 캐시 컬럼(note_count, has_notes, summary)을 재계산 */
 function refreshDayCache(db: Database.Database, dayId: string, now: number): void {
-  // 단일 쿼리로 count + 첫 번째 아이템 조회
-  const stat = db.prepare(`
-    SELECT
-      COUNT(*) AS cnt,
-      (SELECT content FROM note_item WHERE day_id = @dayId ORDER BY order_index ASC LIMIT 1) AS first_content,
-      (SELECT type    FROM note_item WHERE day_id = @dayId ORDER BY order_index ASC LIMIT 1) AS first_type
-    FROM note_item
-    WHERE day_id = @dayId
-  `).get({ dayId }) as { cnt: number; first_content: string | null; first_type: string | null }
+  // 모든 아이템 조회 (최대 10개) — 각 메모의 첫 줄을 summary에 포함
+  const allItems = db.prepare(`
+    SELECT content, type FROM note_item
+    WHERE day_id = @dayId ORDER BY order_index ASC LIMIT 10
+  `).all({ dayId }) as Array<{ content: string; type: string }>
 
-  const count = stat.cnt
+  const count = db.prepare('SELECT COUNT(*) AS cnt FROM note_item WHERE day_id = @dayId').get({ dayId }) as { cnt: number }
   let summary: string | null = null
 
-  if (stat.first_content) {
-    if (stat.first_type === 'checklist') {
-      try {
-        const items = JSON.parse(stat.first_content) as Array<{ text: string }>
-        summary = items.map(i => i.text).join(', ').slice(0, 80)
-      } catch { /* 파싱 실패 시 null */ }
-    } else if (stat.first_type === 'image') {
-      try {
-        const imgData = JSON.parse(stat.first_content) as { caption?: string }
-        summary = imgData.caption ? `🖼 ${imgData.caption}`.slice(0, 80) : '🖼 이미지'
-      } catch { summary = '🖼 이미지' }
-    } else {
-      // 인라인 마크다운/파일 태그 제거하여 순수 텍스트만 추출
-      summary = stat.first_content
-        .replace(/\[file:.+?\]/g, '')       // [file:경로] 제거
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [링크](url) → 링크 텍스트만
-        .replace(/\*\*(.+?)\*\*/g, '$1')    // **굵게** → 굵게
-        .replace(/\*(.+?)\*/g, '$1')        // *기울임* → 기울임
-        .replace(/`(.+?)`/g, '$1')          // `코드` → 코드
-        .replace(/\n/g, ' ')                // 줄바꿈 → 공백
-        .trim()
-        .slice(0, 80) || null
+  if (allItems.length > 0) {
+    const lines: string[] = []
+    for (const item of allItems) {
+      const line = extractOneLine(item.content, item.type)
+      if (line) lines.push(line)
     }
+    summary = lines.join('\n').slice(0, 300) || null
   }
 
   db.prepare(`
@@ -463,7 +443,35 @@ function refreshDayCache(db: Database.Database, dayId: string, now: number): voi
     VALUES (@id, @count, @hasNotes, @summary, @now)
     ON CONFLICT(id) DO UPDATE SET
       note_count = @count, has_notes = @hasNotes, summary = @summary, updated_at = @now
-  `).run({ id: dayId, count, hasNotes: count > 0 ? 1 : 0, summary, now })
+  `).run({ id: dayId, count: count.cnt, hasNotes: count.cnt > 0 ? 1 : 0, summary, now })
+}
+
+/** 아이템 content에서 한 줄 요약 텍스트 추출 */
+function extractOneLine(content: string, type: string): string | null {
+  if (!content) return null
+  if (type === 'checklist') {
+    try {
+      const items = JSON.parse(content) as Array<{ text: string; done?: boolean }>
+      const first = items[0]
+      return first ? `☐ ${first.text}`.slice(0, 50) : null
+    } catch { return null }
+  }
+  if (type === 'image') {
+    try {
+      const imgData = JSON.parse(content) as { caption?: string }
+      return imgData.caption ? `🖼 ${imgData.caption}`.slice(0, 50) : '🖼 이미지'
+    } catch { return '🖼 이미지' }
+  }
+  if (type === 'divider') return '───'
+  return content
+    .replace(/\[file:.+?\]/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .split('\n')[0]
+    .trim()
+    .slice(0, 50) || null
 }
 
 /** 모든 날짜의 summary 캐시를 재계산 (앱 시작 시 1회, updated_at 유지) */

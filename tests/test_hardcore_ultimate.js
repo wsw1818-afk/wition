@@ -49,6 +49,7 @@ const TEST_DATES = {
   race:     '2027-11-01', // 시나리오 11: race condition
   threeway: '2027-12-01', // 시나리오 12: 3자 동시
   threeway2:'2027-12-02',
+  newpc:    '2027-01-15', // 시나리오 13: 새 PC 삭제 DB 부활
 }
 const ALL_DATES = Object.values(TEST_DATES)
 
@@ -102,8 +103,8 @@ async function cleanup(dayIds, itemPrefix) {
     await pcQuery(`DELETE FROM note_day WHERE id = '${day}'`)
   }
   if (itemPrefix) {
-    await pcQuery(`DELETE FROM tombstone WHERE item_id LIKE '${itemPrefix}%'`)
-    try { await sb.from('tombstone').delete().like('item_id', `${itemPrefix}%`).eq('user_id', USER_ID) } catch {}
+    await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE '${itemPrefix}%'`)
+    try { await sb.from('deleted_items').delete().like('item_id', `${itemPrefix}%`).eq('user_id', USER_ID) } catch {}
   }
 }
 
@@ -815,6 +816,99 @@ async function scenario12_threeWaySimultaneous() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 시나리오 13: 새 PC 설치 시 삭제 DB 부활 방지
+//   OneDrive로 DB가 복제된 상태에서 새 PC가 첫 sync하면
+//   서버에서 이미 삭제된 메모가 다시 push되는 버그 검증
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async function scenario13_newPcDeletedDbResurrection() {
+  log('\n═══ 시나리오 13: 새 PC 삭제 DB 부활 방지 ═══')
+  const day = TEST_DATES.newpc
+  const prefix = 'npc'
+
+  await cleanup([day], prefix)
+  // deleted_items에서 day ID도 정리 (note_day tombstone 잔존 방지)
+  await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE '${prefix}%' OR item_id = '${day}'`)
+  await sleep(1000)
+
+  const now = Date.now()
+
+  // Step 1: 서버에 3개만 생성 (이것이 "정상 상태" — 이미 7개가 다른 기기에서 삭제된 상황)
+  log('  Step 1: 서버에 3개 생성 (정상 상태) → PC pull')
+  await sb.from('note_day').upsert({
+    id: day, user_id: USER_ID, mood: null,
+    summary: `테스트`, note_count: 3, has_notes: 1, updated_at: now
+  }, { onConflict: 'id,user_id' })
+  for (let i = 7; i < 10; i++) {
+    await sb.from('note_item').upsert({
+      id: `${prefix}-${i}`, day_id: day, user_id: USER_ID,
+      type: 'text', content: `memo ${i}`,
+      tags: '[]', pinned: 0, order_index: i,
+      created_at: now + i, updated_at: now + i
+    }, { onConflict: 'id,user_id' })
+  }
+  await pcSync()
+  await sleep(3000)
+
+  const localPulled = await getLocalItemCount(day)
+  assert(localPulled === 3, `13-1 PC에 3개 pull 완료 (${localPulled}/3)`)
+
+  // Step 2: OneDrive DB 복제 시뮬 — 서버에서 이미 삭제된 ghost memo 7개를 PC 로컬에 강제 삽입
+  log('  Step 2: OneDrive DB 복제 시뮬 — ghost 7개 강제 삽입')
+  for (let i = 0; i < 7; i++) {
+    await pcQuery(`INSERT OR REPLACE INTO note_item (id, day_id, type, content, tags, pinned, order_index, created_at, updated_at) VALUES ('${prefix}-${i}', '${day}', 'text', 'ghost memo ${i}', '[]', 0, ${i}, ${now - 86400000}, ${now - 86400000})`)
+  }
+  const localTen = await getLocalItemCount(day)
+  assert(localTen === 10, `13-2 PC 로컬 10개 (ghost 7 + 정상 3, ${localTen}/10)`)
+
+  // Step 3: 새 PC 시뮬 — lastSyncAt = 0 + deleted_items 정리
+  log('  Step 3: 새 PC 시뮬 (lastSyncAt=0, deleted_items 정리)')
+  await pcRequest('/sync-reset', 'POST')
+  await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE '${prefix}%' OR item_id = '${day}'`)
+
+  // 서버 상태 확인
+  const serverBefore = await getRemoteItemCount(day)
+  assert(serverBefore === 3, `13-3 서버 3개 유지 (${serverBefore}/3)`)
+
+  // Step 4: fullSync (첫 sync 시뮬 — 핵심!)
+  log('  Step 4: fullSync (새 PC 첫 sync)')
+  await pcSync()
+  await sleep(2000)
+  await pcSync()
+  await sleep(1000)
+
+  // Step 5: 검증
+  log('  Step 5: 부활 검증')
+  const serverFinal = await getRemoteItemCount(day)
+  assert(serverFinal === 3, `13-4 ★ 서버: ghost memo 부활 없음 (${serverFinal}/3)`)
+
+  const localFinal = await getLocalItemCount(day)
+  assert(localFinal === 3, `13-5 ★ PC: ghost memo 정리됨 (${localFinal}/3)`)
+
+  const dayData = await getLocalDay(day)
+  assert(dayData?.note_count === 3, `13-6 note_day count 정합 (${dayData?.note_count}/3)`)
+
+  // 남은 3개가 올바른 아이템인지
+  let allPresent = true
+  for (let i = 7; i < 10; i++) {
+    const r = await pcQuery(`SELECT id FROM note_item WHERE id = '${prefix}-${i}'`)
+    if (!r.rows || r.rows.length === 0) { allPresent = false; break }
+  }
+  assert(allPresent, `13-7 남은 3개가 올바른 아이템 (${prefix}-7~9)`)
+
+  // ghost가 정말 없는지
+  let anyResurrected = false
+  for (let i = 0; i < 7; i++) {
+    const r = await pcQuery(`SELECT id FROM note_item WHERE id = '${prefix}-${i}'`)
+    if (r.rows && r.rows.length > 0) { anyResurrected = true; break }
+  }
+  assert(!anyResurrected, `13-8 ★ ghost 7개 부활 없음`)
+
+  await cleanup([day], prefix)
+  await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE '${prefix}%' OR item_id = '${day}'`)
+  log('  시나리오 13 완료')
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 메인 실행
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function main() {
@@ -843,7 +937,7 @@ async function main() {
   // 전체 테스트 데이터 사전 정리
   log('\n사전 정리 (테스트 날짜 범위)...')
   await cleanup(ALL_DATES, '2098')
-  await pcQuery(`DELETE FROM tombstone WHERE item_id LIKE 'bulk%' OR item_id LIKE 'flk%' OR item_id LIKE 'conc%' OR item_id LIKE 'offl%' OR item_id LIKE 'strm%' OR item_id LIKE 'ndp%' OR item_id LIKE 'tmbs%' OR item_id LIKE 'lww%' OR item_id LIKE 'empt%' OR item_id LIKE 'odv%' OR item_id LIKE 'race%' OR item_id LIKE '3way%'`)
+  await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE 'bulk%' OR item_id LIKE 'flk%' OR item_id LIKE 'conc%' OR item_id LIKE 'offl%' OR item_id LIKE 'strm%' OR item_id LIKE 'ndp%' OR item_id LIKE 'tmbs%' OR item_id LIKE 'lww%' OR item_id LIKE 'empt%' OR item_id LIKE 'odv%' OR item_id LIKE 'race%' OR item_id LIKE '3way%' OR item_id LIKE 'npc%'`)
 
   await sleep(1000)
 
@@ -860,11 +954,12 @@ async function main() {
   try { await scenario10_onedriveSimulation() } catch (e) { log(`❌ 시나리오 10 예외: ${e.message}`) }
   try { await scenario11_burstRace() } catch (e) { log(`❌ 시나리오 11 예외: ${e.message}`) }
   try { await scenario12_threeWaySimultaneous() } catch (e) { log(`❌ 시나리오 12 예외: ${e.message}`) }
+  try { await scenario13_newPcDeletedDbResurrection() } catch (e) { log(`❌ 시나리오 13 예외: ${e.message}`) }
 
   // 최종 정리
   log('\n최종 정리...')
   await cleanup(ALL_DATES, '2098')
-  await pcQuery(`DELETE FROM tombstone WHERE item_id LIKE 'bulk%' OR item_id LIKE 'flk%' OR item_id LIKE 'conc%' OR item_id LIKE 'offl%' OR item_id LIKE 'strm%' OR item_id LIKE 'ndp%' OR item_id LIKE 'tmbs%' OR item_id LIKE 'lww%' OR item_id LIKE 'empt%' OR item_id LIKE 'odv%' OR item_id LIKE 'race%' OR item_id LIKE '3way%'`)
+  await pcQuery(`DELETE FROM deleted_items WHERE item_id LIKE 'bulk%' OR item_id LIKE 'flk%' OR item_id LIKE 'conc%' OR item_id LIKE 'offl%' OR item_id LIKE 'strm%' OR item_id LIKE 'ndp%' OR item_id LIKE 'tmbs%' OR item_id LIKE 'lww%' OR item_id LIKE 'empt%' OR item_id LIKE 'odv%' OR item_id LIKE 'race%' OR item_id LIKE '3way%' OR item_id LIKE 'npc%'`)
 
   // 결과 요약
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)

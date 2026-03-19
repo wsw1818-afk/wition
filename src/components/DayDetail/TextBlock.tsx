@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import type { NoteItem } from '../../types'
 import { parseTags } from '../../types'
 import { TagInput } from './TagInput'
@@ -42,6 +42,8 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
   const fileTag = fileTagMatch ? fileTagMatch[0] : null
   const isFileBlock = !!fileTag
 
+  const stableTags = useMemo(() => parseTags(item.tags), [item.tags])
+
   const [text, setText] = useState(isFileBlock ? '' : item.content)
 
   useEffect(() => {
@@ -83,16 +85,16 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
 
   return (
     <div
-      className={`group relative rounded-lg px-3 py-2 transition-colors
+      className={`group relative rounded-lg px-3 py-1 transition-colors
         hover:bg-gray-50 dark:hover:bg-gray-800/50
         ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
       {/* 본문 */}
       {isFileBlock ? (
         /* 파일 첨부 블록: 편집 불가, 업로드 시간 표시 */
-        <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed">
+        <div className="text-base text-gray-800 dark:text-gray-200 leading-relaxed">
           <InlineRenderer text={item.content} onDateClick={handleDateClick} />
-          <div className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 select-none">
+          <div className="mt-1 text-xs text-gray-400 dark:text-gray-500 select-none">
             {formatUploadTime(item.created_at)}
           </div>
         </div>
@@ -104,7 +106,7 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
             onChange={(e) => { setText(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
             onBlur={save}
             onKeyDown={(e) => { if (e.key === 'Escape') save() }}
-            className="w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 resize-none
+            className="w-full bg-transparent text-base text-gray-800 dark:text-gray-200 resize-none
                        outline-none leading-relaxed"
             rows={1}
           />
@@ -112,15 +114,15 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
       ) : (
         <div
           onClick={() => setEditing(true)}
-          className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
+          className="text-base text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
                      cursor-text min-h-[20px]"
         >
           <InlineRenderer text={item.content} onDateClick={handleDateClick} />
         </div>
       )}
 
-      {/* 태그 */}
-      <TagInput tags={parseTags(item.tags)} onChange={onTagsChange} />
+      {/* 태그 — memo 안정화: 부모 리렌더 시 TagInput 편집 상태 유지 */}
+      <TagInput tags={stableTags} onChange={onTagsChange} />
 
       <BlockActions item={item} onDelete={onDelete} onTogglePin={onTogglePin} onCopyMove={onCopyMove} />
     </div>

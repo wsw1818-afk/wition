@@ -14,6 +14,8 @@ interface DayState {
 interface DayActions {
   /** 날짜 선택 시 아이템 로드 */
   load: (dayId: string) => Promise<void>
+  /** sync:done 시 호출 — 변경된 항목만 머지 (불필요한 리렌더 방지) */
+  softReload: (dayId: string) => Promise<void>
   /** 텍스트 블록 추가 */
   addText: (text: string) => Promise<NoteDay | null>
   /** 체크리스트 블록 추가 (첫 항목 텍스트 선택적) */
@@ -65,6 +67,61 @@ export const useDayStore = create<DayStore>((set, get) => ({
       if (seq === _dayLoadSeq) set({ items: [], alarms: [] })
     } finally {
       if (seq === _dayLoadSeq) set({ loading: false })
+    }
+  },
+
+  softReload: async (dayId) => {
+    const current = get()
+    if (current.dayId !== dayId) return
+    try {
+      const [freshItems, freshAlarms] = await Promise.all([
+        window.api.getNoteItems(dayId),
+        window.api.getAlarms(dayId),
+      ])
+      // dayId가 로드 중 바뀌었으면 무시
+      if (get().dayId !== dayId) return
+
+      const oldItems = get().items
+      // 변경 여부 비교: 개수, id 순서, 각 항목의 updated_at
+      let itemsChanged = oldItems.length !== freshItems.length
+      if (!itemsChanged) {
+        for (let i = 0; i < oldItems.length; i++) {
+          if (oldItems[i].id !== freshItems[i].id ||
+              oldItems[i].updated_at !== freshItems[i].updated_at ||
+              oldItems[i].content !== freshItems[i].content ||
+              oldItems[i].tags !== freshItems[i].tags ||
+              oldItems[i].pinned !== freshItems[i].pinned ||
+              oldItems[i].order_index !== freshItems[i].order_index) {
+            itemsChanged = true
+            break
+          }
+        }
+      }
+
+      const oldAlarms = get().alarms
+      let alarmsChanged = oldAlarms.length !== freshAlarms.length
+      if (!alarmsChanged) {
+        for (let i = 0; i < oldAlarms.length; i++) {
+          if (oldAlarms[i].id !== freshAlarms[i].id ||
+              oldAlarms[i].time !== freshAlarms[i].time ||
+              oldAlarms[i].enabled !== freshAlarms[i].enabled) {
+            alarmsChanged = true
+            break
+          }
+        }
+      }
+
+      // 변경된 것만 set (변경 없으면 리렌더 없음)
+      if (itemsChanged && alarmsChanged) {
+        set({ items: freshItems, alarms: freshAlarms })
+      } else if (itemsChanged) {
+        set({ items: freshItems })
+      } else if (alarmsChanged) {
+        set({ alarms: freshAlarms })
+      }
+      // 둘 다 변경 없으면 set 호출 안 함 → 리렌더 없음
+    } catch (err) {
+      console.error('dayStore.softReload:', err)
     }
   },
 

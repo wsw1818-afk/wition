@@ -104,7 +104,7 @@ export function CalloutBlock({ item, onUpdate, onTagsChange, onDelete, onToggleP
               onChange={(e) => { setText(e.target.value); autoResize(e.target); autoSave(e.target.value) }}
               onBlur={save}
               onKeyDown={(e) => { if (e.key === 'Escape') save() }}
-              className="w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 resize-none
+              className="w-full bg-transparent text-base text-gray-800 dark:text-gray-200 resize-none
                          outline-none leading-relaxed"
               rows={1}
               placeholder="콜아웃 내용을 입력하세요..."
@@ -112,7 +112,7 @@ export function CalloutBlock({ item, onUpdate, onTagsChange, onDelete, onToggleP
           ) : (
             <div
               onClick={() => setEditing(true)}
-              className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
+              className="text-base text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed
                          cursor-text min-h-[20px]"
             >
               {data.text || <span className="text-gray-400">콜아웃 내용을 입력하세요...</span>}
