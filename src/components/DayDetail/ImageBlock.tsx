@@ -35,9 +35,9 @@ export function ImageBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
     }
   }
 
-  // 이미지 경로 결정: http URL이면 그대로, file: 접두사 또는 일반 파일명이면 로컬 참조
+  // 이미지 경로 결정: http/data URL이면 그대로, 로컬 파일이면 wition-file:// 참조
   const imgSrc = hasSrc
-    ? data.src.startsWith('http')
+    ? (data.src.startsWith('http') || data.src.startsWith('data:'))
       ? data.src
       : `wition-file://${data.src}`
     : ''
