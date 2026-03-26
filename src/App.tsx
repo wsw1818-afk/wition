@@ -147,14 +147,14 @@ function MainApp({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => v
   // 방법1: preload IPC (기존)
   useEffect(() => {
     const unsub = window.api.onSyncDone(() => {
+      const month = useCalendarStore.getState().currentMonth
       const dayId = useDayStore.getState().dayId
-      console.log('[sync:done IPC] 수신 — dayId:', dayId)
-      if (!initialSyncDone) setInitialSyncDone(true)
-      loadMonth(currentMonth)
+      setInitialSyncDone(true)
+      loadMonth(month)
       if (dayId) useDayStore.getState().softReload(dayId)
     })
     return unsub
-  }, [currentMonth, loadMonth, initialSyncDone])
+  }, [loadMonth])
 
   // sync-refresh window 이벤트는 sync:done IPC와 중복되므로 제거됨 (IPC만 사용)
 

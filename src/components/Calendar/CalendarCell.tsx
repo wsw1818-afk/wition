@@ -130,14 +130,4 @@ export const CalendarCell = memo(function CalendarCell({
       )}
     </button>
   )
-}, (prev, next) =>
-  prev.day === next.day &&
-  prev.isToday === next.isToday &&
-  prev.isSelected === next.isSelected &&
-  prev.isCurrentMonth === next.isCurrentMonth &&
-  prev.noteDay === next.noteDay &&
-  prev.holiday === next.holiday &&
-  prev.hasAlarm === next.hasAlarm &&
-  prev.isFiltered === next.isFiltered &&
-  prev.onContextMenu === next.onContextMenu
-)
+})

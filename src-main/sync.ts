@@ -477,7 +477,7 @@ function updateDayCount(db: Database.Database, dayId: string, preserveUpdatedAt 
 }
 
 /** 로컬 note_day 캐시를 실제 note_item 기준으로 전체 재계산 (updated_at 변경 안 함 — push 핑퐁 방지) */
-function recalcAllDayCounts(db: Database.Database): void {
+export function recalcAllDayCounts(db: Database.Database): void {
   // 1) 기존 note_day 재계산
   const allDays = db.prepare('SELECT id, mood, note_count, updated_at FROM note_day').all() as Array<{ id: string; mood: string | null; note_count: number; updated_at: number }>
   const processedDayIds = new Set<string>()
@@ -486,13 +486,15 @@ function recalcAllDayCounts(db: Database.Database): void {
     const row = db.prepare('SELECT COUNT(*) as cnt FROM note_item WHERE day_id = ?').get(day.id) as { cnt: number }
     if (row.cnt === 0 && !day.mood) {
       db.prepare('DELETE FROM note_day WHERE id = ?').run(day.id)
-    } else if (row.cnt !== day.note_count || (row.cnt > 0 && (() => {
-      const s = (db.prepare('SELECT summary FROM note_day WHERE id = ?').get(day.id) as { summary: string | null } | undefined)?.summary
-      return !s || (row.cnt > 1 && !s.includes('\n'))
-    })())) {
-      const summary = row.cnt > 0 ? extractSummary(db, day.id) : null
-      db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = ? WHERE id = ?')
-        .run(row.cnt, row.cnt > 0 ? 1 : 0, summary, day.id)
+    } else {
+      // summary 재생성이 필요한지 확인 (변경 시에만 UPDATE — 무한 루프 방지)
+      const currentSummary = (db.prepare('SELECT summary FROM note_day WHERE id = ?').get(day.id) as { summary: string | null } | undefined)?.summary ?? null
+      const newSummary = row.cnt > 0 ? extractSummary(db, day.id) : null
+      const needsUpdate = row.cnt !== day.note_count || currentSummary !== newSummary
+      if (needsUpdate) {
+        db.prepare('UPDATE note_day SET note_count = ?, has_notes = ?, summary = ? WHERE id = ?')
+          .run(row.cnt, row.cnt > 0 ? 1 : 0, newSummary, day.id)
+      }
     }
   }
   // 2) note_item은 있지만 note_day가 없는 날 생성 (동기화로 item만 들어온 경우)
@@ -690,11 +692,12 @@ export async function fullSync(
     const localItemCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_item').get() as { cnt: number }).cnt
     if (authenticated && (remoteItems.length > 0 || localItemCount > 0)) {
       // push로 새로 올린 데이터를 포함하여 서버 상태 재조회
-      const [{ data: freshDaysData }, { data: freshItemsData }] = await Promise.all([
+      const [{ data: freshDaysData }, { data: freshItemsData }, { data: freshAlarmsData }] = await Promise.all([
         supabase.from('note_day').select('*').eq('user_id', currentUserId),
-        supabase.from('note_item').select('*').eq('user_id', currentUserId)
+        supabase.from('note_item').select('*').eq('user_id', currentUserId),
+        supabase.from('alarm').select('*').eq('user_id', currentUserId)
       ])
-      cleaned = cleanDeletedFromRemote(db, (freshDaysData ?? remoteDays) as NoteDayRow[], (freshItemsData ?? remoteItems) as NoteItemRow[], lastSyncAt)
+      cleaned = cleanDeletedFromRemote(db, (freshDaysData ?? remoteDays) as NoteDayRow[], (freshItemsData ?? remoteItems) as NoteItemRow[], lastSyncAt, (freshAlarmsData ?? remoteAlarms) as AlarmRow[])
     }
 
     // 서버 note_day 캐시 정합성 수정 (모바일이 item 삭제 시 day count를 안 바꾸는 문제 보정)
@@ -848,7 +851,8 @@ function cleanDeletedFromRemote(
   db: Database.Database,
   remoteDays: NoteDayRow[],
   remoteItems: NoteItemRow[],
-  lastSyncAt?: number
+  lastSyncAt?: number,
+  remoteAlarms?: AlarmRow[]
 ): number {
   try {
     const remoteItemIds = new Set(remoteItems.map(i => i.id))
@@ -905,6 +909,27 @@ function cleanDeletedFromRemote(
         updateDayCount(db, dayId, true)
       }
     }
+
+    // 알람 정리: 서버에 없는 로컬 알람 삭제
+    if (remoteAlarms) {
+      const remoteAlarmIds = new Set(remoteAlarms.map(a => a.id))
+      const localAlarms = db.prepare('SELECT id FROM alarm').all() as Array<{ id: string }>
+      let alarmDeleted = 0
+      db.transaction(() => {
+        for (const la of localAlarms) {
+          if (!remoteAlarmIds.has(la.id) && !tombstoneSet.has(`alarm:${la.id}`)) {
+            db.prepare('DELETE FROM alarm WHERE id = ?').run(la.id)
+            addTombstone(db, 'alarm', la.id)
+            alarmDeleted++
+          }
+        }
+      })()
+      if (alarmDeleted > 0) {
+        slog(`[Sync] 원격에서 삭제된 로컬 알람 ${alarmDeleted}개 정리`)
+        deleted += alarmDeleted
+      }
+    }
+
     return deleted
   } catch (err) {
     slog(`[Sync] cleanDeletedFromRemote 실패: ${err}`)

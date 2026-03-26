@@ -535,10 +535,6 @@ function registerIpcHandlers(): void {
 
   // 디버그: preload 로드 확인
   ipcMain.on('debug:preloadLoaded', () => {
-    syncLog('[DEBUG] preload 로드 완료!')
-  })
-  ipcMain.on('debug:syncDoneReceived', () => {
-    syncLog('[DEBUG] Renderer가 sync:done 수신 확인!')
   })
 
   ipcMain.handle('db:getNoteItems', (_e, dayId: string) => {
