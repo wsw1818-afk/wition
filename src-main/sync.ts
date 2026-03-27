@@ -682,20 +682,18 @@ export async function fullSync(
     let pulled = applyPull(db, remoteDays, remoteItems, remoteAlarms, db)
     if (pulled > 0) slog(`[Sync] pulled ${pulled}건`)
 
-    // Push 먼저: 로컬 새 데이터를 원격에 반영 (clean 전에 push해야 오프라인 메모가 삭제되지 않음)
+    // Push 먼저: 오프라인 메모를 서버에 올린 후 clean (PC는 단건 sync 실패 복구 필요)
     const pushed = await pushChanges(db, lastSyncAt, remoteDays, remoteItems, remoteAlarms)
 
-    // 서버 = SSOT: 서버에 없는 로컬 데이터는 삭제
-    // push 후 실행하므로 오프라인 작성 메모는 이미 서버에 올라간 상태
-    // 첫 sync에서도 실행 필수 (OneDrive DB 복제로 삭제된 메모가 로컬에 남아있을 수 있음)
+    // Clean: push 후 서버 재조회하여 서버에 없는 로컬 데이터 삭제
     let cleaned = 0
     const localItemCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_item').get() as { cnt: number }).cnt
     if (authenticated && (remoteItems.length > 0 || localItemCount > 0)) {
       // push로 새로 올린 데이터를 포함하여 서버 상태 재조회
       const [{ data: freshDaysData }, { data: freshItemsData }, { data: freshAlarmsData }] = await Promise.all([
-        supabase.from('note_day').select('*').eq('user_id', currentUserId),
-        supabase.from('note_item').select('*').eq('user_id', currentUserId),
-        supabase.from('alarm').select('*').eq('user_id', currentUserId)
+        supabase!.from('note_day').select('*').eq('user_id', currentUserId),
+        supabase!.from('note_item').select('*').eq('user_id', currentUserId),
+        supabase!.from('alarm').select('*').eq('user_id', currentUserId)
       ])
       cleaned = cleanDeletedFromRemote(db, (freshDaysData ?? remoteDays) as NoteDayRow[], (freshItemsData ?? remoteItems) as NoteItemRow[], lastSyncAt, (freshAlarmsData ?? remoteAlarms) as AlarmRow[])
     }
@@ -1112,18 +1110,13 @@ async function pushChanges(
     .filter(li => {
       const ts = remoteItemMap.get(li.id as string)
       if (ts === undefined) {
-        // 첫 sync(lastSyncAt 없음): 서버가 SSOT → 서버에 없는 로컬 아이템은 push 금지
-        // (OneDrive DB 복제 등으로 삭제된 메모가 로컬에 남아있을 수 있음)
-        if (isFirstSync) {
-          slog(`[Sync] 첫 sync: 서버에 없는 로컬 아이템 스킵 (${li.id})`)
-          return false
-        }
-        // 서버에 없는 아이템: created_at 또는 updated_at이 lastSyncAt 이후면 push
-        // (OneDrive 병합으로 들어온 데이터는 created_at이 오래됐지만 updated_at은 원본 시각)
+        // 서버에 없는 아이템: created_at 또는 updated_at이 lastSyncAt 이후면 push (새로 만든 것)
+        // pendingSyncQueue가 메모리에만 있어 재시작 시 소실되므로, lastSyncAt 대신
+        // cleanDeletedFromRemote에서 보호된 아이템(protectAfter 이후 생성)만 push
+        if (isFirstSync) return false  // 첫 sync: 서버가 SSOT
         if ((li.created_at as number) > protectAfter || (li.updated_at as number) > protectAfter) {
           return true
         }
-        // created_at과 updated_at 모두 lastSyncAt 이전 → 서버에서 삭제된 아이템
         return false
       }
       if ((li.updated_at as number) > ts) {

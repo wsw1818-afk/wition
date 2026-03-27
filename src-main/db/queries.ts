@@ -29,7 +29,7 @@ export function getNoteDaysByMonth(db: Database.Database, yearMonth: string): No
   const pattern = `${yearMonth}-%`
   // note_day와 note_item 양쪽 모두에서 해당 월의 날짜를 수집
   // note_day가 없지만 note_item이 있는 날도 포함 (동기화 후 캐시 불일치 방지)
-  return db
+  const rows = db
     .prepare(`
       SELECT
         all_days.id,
@@ -50,6 +50,17 @@ export function getNoteDaysByMonth(db: Database.Database, yearMonth: string): No
       ORDER BY all_days.id
     `)
     .all({ p: pattern }) as NoteDayRow[]
+
+  // summary가 NULL인데 note_count > 0인 날: 즉시 캐시 재생성 (동기화 후 불일치 복구)
+  for (const row of rows) {
+    if (row.note_count > 0 && !row.summary) {
+      refreshDayCache(db, row.id, Date.now())
+      const fresh = db.prepare('SELECT summary FROM note_day WHERE id = ?').get(row.id) as { summary: string | null } | undefined
+      if (fresh) row.summary = fresh.summary
+    }
+  }
+
+  return rows
 }
 
 /** 단일 NoteDay 조회 */
