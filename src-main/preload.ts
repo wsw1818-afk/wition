@@ -35,6 +35,8 @@ const api = {
   // ── 파일 첨부 ──
   attachFile:       () => ipcRenderer.invoke('app:attachFile'),
   openAttachment:   (fileName: string) => ipcRenderer.invoke('app:openAttachment', fileName),
+  openExternal:     (url: string) => ipcRenderer.invoke('app:openExternal', url),
+  openBase64Image:  (dataUrl: string) => ipcRenderer.invoke('app:openBase64Image', dataUrl),
 
   // ── 클립보드 이미지 저장 ──
   saveClipboardImage: (base64: string) => ipcRenderer.invoke('app:saveClipboardImage', base64) as Promise<{ name: string; path: string; size: number } | null>,

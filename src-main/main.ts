@@ -801,27 +801,56 @@ function registerIpcHandlers(): void {
     }
 
     if (!existsSync(filePath)) {
-      console.error('[openAttachment] 파일 없음:', filePath)
-      dialog.showMessageBox({
-        type: 'error',
-        title: '파일 열기 실패',
-        message: `파일을 찾을 수 없습니다:\n${filePath}`
-      })
-      return false
+      // 로컬에 없으면 서버에서 다운로드 시도
+      console.log('[openAttachment] 로컬 없음 → 서버 다운로드 시도:', fileName)
+      const attachDir = join(config.dataPath, 'attachments')
+      if (!existsSync(attachDir)) mkdirSync(attachDir, { recursive: true })
+      const downloaded = await Sync.downloadAttachmentFile(attachDir, fileName)
+      if (downloaded) {
+        filePath = resolve(join(attachDir, fileName))
+      } else {
+        console.error('[openAttachment] 서버에도 파일 없음:', fileName)
+        dialog.showMessageBox({
+          type: 'error',
+          title: '파일 열기 실패',
+          message: `파일을 찾을 수 없습니다:\n${fileName}`
+        })
+        return false
+      }
     }
 
     try {
-      await shell.openExternal(pathToFileURL(filePath).href)
-      return true
-    } catch (err) {
-      console.error('[openAttachment] 열기 실패:', err)
       const errMsg = await shell.openPath(filePath)
       if (errMsg) {
-        console.error('[openAttachment] openPath도 실패:', errMsg)
+        console.error('[openAttachment] openPath 실패:', errMsg)
         return false
       }
       return true
+    } catch (err) {
+      console.error('[openAttachment] 열기 실패:', err)
+      return false
     }
+  })
+
+  // ── 외부 URL 열기 (렌더러에서 window.open 대신 사용) ──
+  ipcMain.handle('app:openExternal', async (_e, url: string) => {
+    try { await shell.openExternal(url); return true } catch { return false }
+  })
+
+  // ── base64 이미지를 임시 파일로 저장 후 열기 ──
+  ipcMain.handle('app:openBase64Image', async (_e, dataUrl: string) => {
+    try {
+      const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)/)
+      if (!match) return false
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1]
+      const buffer = Buffer.from(match[2], 'base64')
+      const tmpPath = join(config.dataPath, 'attachments', `_temp_preview.${ext}`)
+      const attachDir = join(config.dataPath, 'attachments')
+      if (!existsSync(attachDir)) mkdirSync(attachDir, { recursive: true })
+      writeFileSync(tmpPath, buffer)
+      const errMsg = await shell.openPath(tmpPath)
+      return !errMsg
+    } catch { return false }
   })
 
   // ── 클립보드 이미지 저장 ──

@@ -50,11 +50,22 @@ export function ImageBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin
     >
       {hasSrc ? (
         <div>
-          <div className="rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800">
+          <div className="rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800 cursor-pointer"
+            onDoubleClick={() => {
+              if (data.src.startsWith('http')) {
+                window.api.openExternal(data.src)
+              } else if (data.src.startsWith('data:')) {
+                window.api.openBase64Image(data.src)
+              } else {
+                window.api.openAttachment(data.src)
+              }
+            }}
+            title="더블클릭하여 원본 열기"
+          >
             <img
               src={imgSrc}
               alt={data.caption || '이미지'}
-              className="max-w-full max-h-[400px] object-contain mx-auto"
+              className="max-w-full max-h-[400px] object-contain mx-auto hover:opacity-90 transition-opacity"
               onError={(e) => {
                 // 로드 실패 시 파일명 표시
                 (e.target as HTMLImageElement).style.display = 'none'

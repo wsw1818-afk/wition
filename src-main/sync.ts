@@ -8,7 +8,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type Database from 'better-sqlite3'
 import type { NoteDayRow, NoteItemRow, AlarmRow } from './db/queries'
 import { getTombstones, clearTombstones, isTombstoned, addTombstone } from './db/queries'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join, extname } from 'path'
 import WebSocket from 'ws'
 
@@ -1482,6 +1482,25 @@ export async function pullAttachmentFiles(attachDir: string): Promise<number> {
     console.error('[Sync] 첨부파일 pull 실패:', err)
   }
   return count
+}
+
+/** 서버에서 단일 첨부파일 다운로드 (openAttachment에서 로컬에 없을 때 호출) */
+export async function downloadAttachmentFile(attachDir: string, fileName: string): Promise<boolean> {
+  if (!supabase || !currentUserId) return false
+  try {
+    const { data, error } = await supabase
+      .from('attachment_file')
+      .select('data')
+      .eq('file_name', fileName)
+      .eq('user_id', currentUserId)
+      .single()
+    if (error || !data) return false
+    const buffer = Buffer.from(data.data, 'base64')
+    if (!existsSync(attachDir)) mkdirSync(attachDir, { recursive: true })
+    writeFileSync(join(attachDir, fileName), buffer)
+    console.log(`[Sync] 첨부파일 온디맨드 다운로드: ${fileName} (${buffer.length} bytes)`)
+    return true
+  } catch { return false }
 }
 
 /** 로컬에 있지만 원격에 없는 첨부파일을 업로드 (해당 user만) */
