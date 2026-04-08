@@ -110,8 +110,8 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
         />
       )}
 
-      <div className="flex items-center gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-800
-                      bg-white dark:bg-gray-900">
+      <div className="flex items-center gap-2 px-4 py-3 border-t border-gray-100 dark:border-white/5
+                      bg-white dark:bg-white/[0.03] dark:backdrop-blur-sm">
         {/* 블록 타입 메뉴 (+ 버튼) */}
         <button
           onClick={() => {

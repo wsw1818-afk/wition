@@ -49,7 +49,7 @@ export function ChecklistBlock({ item, onUpdate, onTagsChange, onDelete, onToggl
   return (
     <div
       className={`group relative rounded-lg px-3 py-1 transition-colors
-        hover:bg-gray-50 dark:hover:bg-gray-800/50
+        hover:bg-gray-50 dark:hover:bg-white/[0.04]
         ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
       {/* 진행률 표시 */}

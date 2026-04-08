@@ -56,13 +56,13 @@ export const CalendarCell = memo(function CalendarCell({
       title={tooltip}
       className={`
         relative flex flex-col items-start justify-start
-        p-1 transition-colors duration-75 text-sm select-none overflow-hidden
-        border-b border-r border-gray-200 dark:border-gray-700
-        ${!isCurrentMonth ? 'bg-gray-50/50 dark:bg-gray-900/30' : 'bg-white dark:bg-gray-900'}
-        ${isSelected ? 'bg-accent-50 dark:bg-accent-500/10' : ''}
+        p-1 transition-all duration-150 text-sm select-none overflow-hidden
+        border-b border-r border-gray-200 dark:border-white/5
+        ${!isCurrentMonth ? 'bg-gray-50/50 dark:bg-white/[0.02]' : 'bg-white dark:bg-white/[0.03]'}
+        ${isSelected ? 'bg-accent-50 dark:bg-accent-500/15 dark:border-accent-500/30 dark:shadow-[0_0_12px_rgba(139,92,246,0.15)]' : ''}
         ${isFiltered === false ? 'opacity-25' : ''}
         ${isFiltered === true ? 'ring-2 ring-inset ring-accent-400' : ''}
-        hover:bg-gray-50 dark:hover:bg-gray-800/50
+        hover:bg-gray-50 dark:hover:bg-white/[0.06]
       `}
       style={{ minHeight: 'auto' }}
     >
@@ -102,10 +102,10 @@ export const CalendarCell = memo(function CalendarCell({
               ${i === 0
                 ? (isSelected
                     ? 'bg-accent-500 text-white font-medium'
-                    : 'bg-accent-100 dark:bg-accent-500/20 text-accent-700 dark:text-accent-300 font-medium')
+                    : 'bg-accent-500/15 dark:bg-accent-500/20 text-accent-600 dark:text-accent-300 font-medium')
                 : (isSelected
-                    ? 'bg-accent-400/60 text-white/80'
-                    : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400')}
+                    ? 'bg-accent-400/40 text-white/80'
+                    : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400')}
             `}>
               {line}
             </div>

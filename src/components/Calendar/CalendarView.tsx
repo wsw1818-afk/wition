@@ -87,7 +87,7 @@ export function CalendarView() {
   const noteCount = contextMenu ? (dayMap[contextMenu.dateStr]?.note_count ?? 0) : 0
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-gray-900">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0f0a1a]">
       <MonthNavigator />
 
       {/* 태그 필터 */}

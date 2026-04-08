@@ -86,7 +86,7 @@ export function TextBlock({ item, onUpdate, onTagsChange, onDelete, onTogglePin,
   return (
     <div
       className={`group relative rounded-lg px-3 py-1 transition-colors
-        hover:bg-gray-50 dark:hover:bg-gray-800/50
+        hover:bg-gray-50 dark:hover:bg-white/[0.04]
         ${item.pinned ? 'border-l-2 border-accent-400' : ''}`}
     >
       {/* 본문 */}
